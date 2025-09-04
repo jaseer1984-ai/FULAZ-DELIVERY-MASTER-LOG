@@ -264,6 +264,13 @@ with st.spinner("LOADING AND PROCESSING DATA..."):
     
     # Load main data
     data = load_excel(uploaded, sheet_name=sheet_name)
+    
+    # Check if data was loaded successfully
+    if data.empty:
+        st.error("❌ FAILED TO LOAD DATA FROM EXCEL FILE")
+        st.info("Please check that your file is a valid Excel file (.xlsx or .xls) and try again.")
+        st.stop()
+    
     data.columns = [c.strip().upper() for c in data.columns]
 
 # Define key columns based on FULAZ structure (ALL CAPS)
