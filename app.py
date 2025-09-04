@@ -1,13 +1,11 @@
 # -*- coding: utf-8 -*-
 # Enhanced Excel → Streamlit Dashboard for FULAZ Delivery MasterLog
-# - Comprehensive KPI section with progress tracking
-# - Advanced filtering with customer and project filters
-# - Interactive time-series analysis
-# - Detailed truck utilization analytics
-# - Geographic zone analysis
-# - Project completion tracking
-# - Export capabilities with multiple formats
-# Author: AI Assistant | Enhanced for FULAZ data structure
+# - Date filters extracted from first row (header dates)
+# - ALL CAPS formatting for professional report presentation
+# - Top-positioned comprehensive filter section
+# - Enhanced metric cards with better visualization
+# - Improved layout and view options
+# Author: AI Assistant | Enhanced for FULAZ Professional Dashboard
 
 import io
 from typing import List, Optional
@@ -22,7 +20,7 @@ import streamlit as st
 
 # ---------------------------- Config & Helpers ----------------------------
 st.set_page_config(
-    page_title="FULAZ Delivery MasterLog Dashboard", 
+    page_title="FULAZ DELIVERY MASTERLOG DASHBOARD", 
     layout="wide", 
     page_icon="🏗️",
     initial_sidebar_state="expanded"
@@ -30,7 +28,7 @@ st.set_page_config(
 
 def fmt_num(x, dec=2):
     try:
-        return f"{float(x):,.{dec}f}"
+        return f"{float(x):,.{dec}f}".upper()
     except Exception:
         return "--"
 
@@ -48,7 +46,7 @@ def load_excel(file, sheet_name: Optional[str] = None) -> pd.DataFrame:
         for hdr in (2, 1, 0):  # Try header at rows 3, 2, then 1
             try:
                 df_try = excel_file.parse(target_sheet, header=hdr)
-                df_try.columns = [str(c).strip() for c in df_try.columns]
+                df_try.columns = [str(c).strip().upper() for c in df_try.columns]
                 # Check for meaningful columns
                 good_cols = sum(not str(c).lower().startswith("unnamed") for c in df_try.columns)
                 if good_cols >= 5:
@@ -57,7 +55,7 @@ def load_excel(file, sheet_name: Optional[str] = None) -> pd.DataFrame:
                 continue
         # Fallback
         df_fallback = excel_file.parse(target_sheet)
-        df_fallback.columns = [str(c).strip() for c in df_fallback.columns]
+        df_fallback.columns = [str(c).strip().upper() for c in df_fallback.columns]
         return df_fallback
 
     # Handle different file types
@@ -75,8 +73,43 @@ def load_excel(file, sheet_name: Optional[str] = None) -> pd.DataFrame:
         xls = pd.ExcelFile(io.BytesIO(file_bytes), engine="xlrd")
     return read_xls(xls, sheet_name)
 
+def extract_header_dates(file, sheet_name: Optional[str] = None) -> List[tuple]:
+    """Extract dates from the first row of Excel file"""
+    try:
+        if isinstance(file, (str, bytes)):
+            path_str = file if isinstance(file, str) else ""
+            engine = "xlrd" if path_str.lower().endswith(".xls") else "openpyxl"
+            xls = pd.ExcelFile(file, engine=engine)
+        else:
+            file_bytes = file.read()
+            try:
+                xls = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
+            except Exception:
+                xls = pd.ExcelFile(io.BytesIO(file_bytes), engine="xlrd")
+        
+        target_sheet = sheet_name or xls.sheet_names[0]
+        first_row = xls.parse(target_sheet, header=None, nrows=1).iloc[0].tolist()
+        
+        dates_with_cols = []
+        for i, cell in enumerate(first_row):
+            if pd.notna(cell):
+                try:
+                    if isinstance(cell, datetime):
+                        dates_with_cols.append((i, cell.date()))
+                    else:
+                        parsed_date = pd.to_datetime(cell, errors='coerce')
+                        if pd.notna(parsed_date):
+                            dates_with_cols.append((i, parsed_date.date()))
+                except Exception:
+                    continue
+        
+        return dates_with_cols
+    except Exception as e:
+        st.warning(f"Could not extract header dates: {str(e)}")
+        return []
+
 def detect_truck_cols(df: pd.DataFrame) -> List[str]:
-    return [c for c in df.columns if str(c).strip().lower().startswith("truck")]
+    return [c for c in df.columns if str(c).strip().upper().startswith("TRUCK")]
 
 def numericify(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     for c in cols:
@@ -86,7 +119,7 @@ def numericify(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
 
 def find_date_cols(df: pd.DataFrame) -> List[str]:
     """Enhanced date column detection"""
-    named = [c for c in df.columns if "date" in str(c).lower()]
+    named = [c for c in df.columns if "DATE" in str(c).upper()]
     dtyped = list(df.select_dtypes(include=["datetime64[ns]", "datetime64[ns, UTC]"]).columns)
     
     # Check for columns that might contain dates
@@ -117,47 +150,100 @@ def coerce_dates(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
             df[c] = pd.to_datetime(df[c], errors="coerce")
     return df
 
-# ---------------------------- Custom CSS ----------------------------
+# ---------------------------- Enhanced CSS ----------------------------
 st.markdown("""
 <style>
     .main-header {
-        font-size: 2.5rem;
+        font-size: 3rem;
         font-weight: bold;
         color: #1f77b4;
         text-align: center;
         margin-bottom: 2rem;
+        text-transform: uppercase;
+        letter-spacing: 2px;
     }
-    .kpi-container {
-        background: linear-gradient(90deg, #f0f2f6 0%, #ffffff 100%);
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 5px solid #1f77b4;
+    .filter-container {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 15px;
+        margin: 1rem 0;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+    }
+    .filter-header {
+        color: white;
+        font-size: 1.8rem;
+        font-weight: bold;
+        text-align: center;
+        margin-bottom: 1rem;
+        text-transform: uppercase;
+    }
+    .metric-card {
+        background: linear-gradient(145deg, #ffffff, #f0f2f6);
+        padding: 1.5rem;
+        border-radius: 15px;
+        border-left: 6px solid #1f77b4;
         margin: 0.5rem 0;
+        box-shadow: 0 8px 25px rgba(0,0,0,0.08);
+        transition: all 0.3s ease;
+    }
+    .metric-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 12px 35px rgba(0,0,0,0.12);
+    }
+    .metric-title {
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: #666;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 0.5rem;
+    }
+    .metric-value {
+        font-size: 2rem;
+        font-weight: bold;
+        color: #1f77b4;
+        margin-bottom: 0.3rem;
+    }
+    .metric-delta {
+        font-size: 0.8rem;
+        color: #28a745;
+        font-weight: 500;
     }
     .section-header {
-        font-size: 1.5rem;
+        font-size: 1.8rem;
         font-weight: bold;
         color: #2c3e50;
-        margin: 1rem 0;
-        border-bottom: 2px solid #1f77b4;
+        margin: 2rem 0 1rem 0;
+        border-bottom: 3px solid #1f77b4;
         padding-bottom: 0.5rem;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    .info-box {
+        background: linear-gradient(90deg, #e3f2fd, #ffffff);
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 4px solid #2196f3;
+        margin: 1rem 0;
+        font-weight: 500;
+        text-transform: uppercase;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ---------------------------- Sidebar: Upload + Configuration ----------------------------
-st.sidebar.markdown("### 📄 File Upload")
-uploaded = st.sidebar.file_uploader("Upload FULAZ Delivery MasterLog", type=["xlsx", "xls"])
+st.sidebar.markdown("### 📄 FILE UPLOAD")
+uploaded = st.sidebar.file_uploader("UPLOAD FULAZ DELIVERY MASTERLOG", type=["xlsx", "xls"])
 
 if not uploaded:
-    st.markdown('<div class="main-header">🏗️ FULAZ Delivery MasterLog Dashboard</div>', unsafe_allow_html=True)
-    st.info("👈 Please upload your **FULAZ Delivery MasterLog** Excel file to get started.")
+    st.markdown('<div class="main-header">🏗️ FULAZ DELIVERY MASTERLOG DASHBOARD</div>', unsafe_allow_html=True)
+    st.info("👈 PLEASE UPLOAD YOUR **FULAZ DELIVERY MASTERLOG** EXCEL FILE TO GET STARTED.")
     st.markdown("""
-    ### Expected File Structure:
-    - **Customer Name**, **Project Name**, **Zone/Location**
-    - **Item Name**, **Delivered Weight**, **Delivered Qty**
-    - **Progress %**, **Truck columns** (Truck1, Truck2, ...)
-    - **Date columns** (automatically detected)
+    ### EXPECTED FILE STRUCTURE:
+    - **CUSTOMER NAME**, **PROJECT NAME**, **ZONE/LOCATION**
+    - **ITEM NAME**, **DELIVERED WEIGHT**, **DELIVERED QTY**
+    - **PROGRESS %**, **TRUCK COLUMNS** (TRUCK1, TRUCK2, ...)
+    - **DATE COLUMNS** (AUTOMATICALLY DETECTED)
     """)
     st.stop()
 
@@ -169,27 +255,31 @@ except Exception:
     _peek = pd.ExcelFile(io.BytesIO(uploaded.getvalue()), engine="xlrd")
     sheet_options = _peek.sheet_names
 
-sheet_name = st.sidebar.selectbox("📋 Select Sheet", options=sheet_options, index=0)
+sheet_name = st.sidebar.selectbox("📋 SELECT SHEET", options=sheet_options, index=0)
 
 # ---------------------------- Load & Prepare Data ----------------------------
-with st.spinner("Loading and processing data..."):
+with st.spinner("LOADING AND PROCESSING DATA..."):
+    # Extract header dates first
+    header_dates = extract_header_dates(uploaded, sheet_name=sheet_name)
+    
+    # Load main data
     data = load_excel(uploaded, sheet_name=sheet_name)
-    data.columns = [c.strip() for c in data.columns]
+    data.columns = [c.strip().upper() for c in data.columns]
 
-# Define key columns based on FULAZ structure
-COL_CUSTOMER = "Customer Name"
-COL_PROJECT = "Project Name" 
-COL_PROJECT_NUM = "Project Number"
-COL_ZONE = "Zone / Location"
-COL_ITEM = "Item Name"
-COL_ITEM_DESC = "Item Description"
-COL_WEIGHT = "Delivered Weight"
-COL_QTY = "Delivered Qty"
-COL_PROGRESS = "Progress %"
-COL_CONTRACTED_WEIGHT = "Contracted Weight"
-COL_CONTRACTED_QTY = "Contracted Qty"
-COL_BALANCE_WEIGHT = "Balance Weight"
-COL_BALANCE_QTY = "Balance Qty"
+# Define key columns based on FULAZ structure (ALL CAPS)
+COL_CUSTOMER = "CUSTOMER NAME"
+COL_PROJECT = "PROJECT NAME" 
+COL_PROJECT_NUM = "PROJECT NUMBER"
+COL_ZONE = "ZONE / LOCATION"
+COL_ITEM = "ITEM NAME"
+COL_ITEM_DESC = "ITEM DESCRIPTION"
+COL_WEIGHT = "DELIVERED WEIGHT"
+COL_QTY = "DELIVERED QTY"
+COL_PROGRESS = "PROGRESS %"
+COL_CONTRACTED_WEIGHT = "CONTRACTED WEIGHT"
+COL_CONTRACTED_QTY = "CONTRACTED QTY"
+COL_BALANCE_WEIGHT = "BALANCE WEIGHT"
+COL_BALANCE_QTY = "BALANCE QTY"
 
 # Process dates, trucks, and numerics
 date_cols = find_date_cols(data)
@@ -206,76 +296,113 @@ data = numericify(data, numeric_cols_to_cast)
 
 # Clean progress percentage (convert to 0-1 range if needed)
 if COL_PROGRESS in data.columns:
-    # If progress values are > 1, assume they're in percentage form
     max_progress = data[COL_PROGRESS].max()
     if not pd.isna(max_progress) and max_progress > 1:
         data[COL_PROGRESS] = data[COL_PROGRESS] / 100
 
 # ---------------------------- Main Dashboard ----------------------------
-st.markdown('<div class="main-header">🏗️ FULAZ Delivery MasterLog Dashboard</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">🏗️ FULAZ DELIVERY MASTERLOG DASHBOARD</div>', unsafe_allow_html=True)
 
-# ---------------------------- Enhanced Filters Section ----------------------------
-st.markdown('<div class="section-header">🔍 Smart Filters</div>', unsafe_allow_html=True)
+# ---------------------------- TOP FILTERS SECTION ----------------------------
+st.markdown('<div class="filter-container">', unsafe_allow_html=True)
+st.markdown('<div class="filter-header">🔍 COMPREHENSIVE FILTERS</div>', unsafe_allow_html=True)
 
-# Create filter columns
-filter_col1, filter_col2, filter_col3 = st.columns(3)
+# Row 1: Date Filters
+st.markdown("#### 📅 DATE RANGE FILTERS")
+date_col1, date_col2, date_col3, date_col4 = st.columns(4)
 
-with filter_col1:
-    # Date filter
+with date_col1:
+    # Header date filter (from first row)
+    if header_dates:
+        st.markdown("**HEADER DATES AVAILABLE**")
+        header_date_options = ["ALL DATES"] + [f"{date.strftime('%Y-%m-%d')}" for col, date in header_dates]
+        selected_header_dates = st.multiselect(
+            "SELECT HEADER DATES", 
+            header_date_options, 
+            default=["ALL DATES"]
+        )
+        
+        if "ALL DATES" not in selected_header_dates:
+            # Filter based on selected header dates
+            selected_date_values = []
+            for col, date in header_dates:
+                if date.strftime('%Y-%m-%d') in selected_header_dates:
+                    selected_date_values.append(date)
+            
+            if selected_date_values:
+                st.success(f"FILTERED BY {len(selected_date_values)} HEADER DATES")
+
+with date_col2:
+    # Column date filter
     active_date_col = None
     if date_cols:
-        active_date_col = st.selectbox("📅 Date Column", options=date_cols, index=0)
-        if active_date_col:
+        active_date_col = st.selectbox("📅 DATE COLUMN", options=["NONE"] + date_cols, index=0)
+        if active_date_col != "NONE":
             dseries = pd.to_datetime(data[active_date_col], errors="coerce")
             valid_dates = dseries.dropna()
             if len(valid_dates) > 0:
                 min_d, max_d = valid_dates.min().date(), valid_dates.max().date()
-                date_range = st.date_input(
-                    "Date Range",
-                    value=(min_d, max_d),
-                    min_value=min_d,
-                    max_value=max_d
-                )
-                if isinstance(date_range, tuple) and len(date_range) == 2:
-                    start_d, end_d = date_range
-                    mask_date = (dseries.dt.date >= start_d) & (dseries.dt.date <= end_d)
+                with date_col3:
+                    start_date = st.date_input("START DATE", value=min_d, min_value=min_d, max_value=max_d)
+                with date_col4:
+                    end_date = st.date_input("END DATE", value=max_d, min_value=min_d, max_value=max_d)
+                
+                if start_date and end_date:
+                    mask_date = (dseries.dt.date >= start_date) & (dseries.dt.date <= end_date)
                     data = data[mask_date]
+                    st.success(f"DATE FILTERED: {start_date} TO {end_date}")
 
-with filter_col2:
+# Row 2: Business Filters
+st.markdown("#### 🏢 BUSINESS DIMENSION FILTERS")
+filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
+
+with filter_col1:
     # Customer filter
     if COL_CUSTOMER in data.columns:
-        customers = ["All"] + sorted(data[COL_CUSTOMER].dropna().astype(str).unique())
-        selected_customers = st.multiselect("🏢 Customer", customers, default=["All"])
-        if "All" not in selected_customers:
+        customers = ["ALL"] + sorted(data[COL_CUSTOMER].dropna().astype(str).unique())
+        selected_customers = st.multiselect("🏢 CUSTOMERS", customers, default=["ALL"])
+        if "ALL" not in selected_customers:
             data = data[data[COL_CUSTOMER].astype(str).isin(selected_customers)]
-    
+
+with filter_col2:
     # Zone filter
     if COL_ZONE in data.columns:
-        zones = ["All"] + sorted(data[COL_ZONE].dropna().astype(str).unique())
-        selected_zones = st.multiselect("🗺️ Zone/Location", zones, default=["All"])
-        if "All" not in selected_zones:
+        zones = ["ALL"] + sorted(data[COL_ZONE].dropna().astype(str).unique())
+        selected_zones = st.multiselect("🗺️ ZONES/LOCATIONS", zones, default=["ALL"])
+        if "ALL" not in selected_zones:
             data = data[data[COL_ZONE].astype(str).isin(selected_zones)]
 
 with filter_col3:
     # Project filter
     if COL_PROJECT in data.columns:
-        projects = ["All"] + sorted(data[COL_PROJECT].dropna().astype(str).unique())
-        selected_projects = st.multiselect("📋 Project", projects, default=["All"])
-        if "All" not in selected_projects:
+        projects = ["ALL"] + sorted(data[COL_PROJECT].dropna().astype(str).unique())
+        selected_projects = st.multiselect("📋 PROJECTS", projects, default=["ALL"])
+        if "ALL" not in selected_projects:
             data = data[data[COL_PROJECT].astype(str).isin(selected_projects)]
-    
+
+with filter_col4:
     # Item filter
     if COL_ITEM in data.columns:
-        items = ["All"] + sorted(data[COL_ITEM].dropna().astype(str).unique())
-        selected_items = st.multiselect("🔧 Item Type", items, default=["All"])
-        if "All" not in selected_items:
+        items = ["ALL"] + sorted(data[COL_ITEM].dropna().astype(str).unique())
+        selected_items = st.multiselect("🔧 ITEM TYPES", items, default=["ALL"])
+        if "ALL" not in selected_items:
             data = data[data[COL_ITEM].astype(str).isin(selected_items)]
 
 # Filter summary
-st.info(f"📊 **Filtered Dataset**: {len(data):,} records from {len(data[COL_CUSTOMER].unique()) if COL_CUSTOMER in data.columns else 'N/A'} customers across {len(data[COL_ZONE].unique()) if COL_ZONE in data.columns else 'N/A'} zones")
+unique_customers = len(data[COL_CUSTOMER].unique()) if COL_CUSTOMER in data.columns else 0
+unique_zones = len(data[COL_ZONE].unique()) if COL_ZONE in data.columns else 0
+unique_projects = len(data[COL_PROJECT].unique()) if COL_PROJECT in data.columns else 0
 
-# ---------------------------- Enhanced KPIs Section ----------------------------
-st.markdown('<div class="section-header">📈 Key Performance Indicators</div>', unsafe_allow_html=True)
+st.markdown(f"""
+<div class="info-box">
+📊 <strong>FILTERED DATASET SUMMARY:</strong> {len(data):,} RECORDS | {unique_customers} CUSTOMERS | {unique_zones} ZONES | {unique_projects} PROJECTS
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+# ---------------------------- ENHANCED METRIC CARDS SECTION ----------------------------
+st.markdown('<div class="section-header">📈 KEY PERFORMANCE INDICATORS</div>', unsafe_allow_html=True)
 
 # Calculate comprehensive KPIs
 total_delivered_weight = float(data[COL_WEIGHT].sum(skipna=True)) if COL_WEIGHT in data.columns else 0
@@ -294,74 +421,140 @@ if truck_cols:
     truck_data = data[truck_cols].fillna(0)
     active_trucks = (truck_data > 0).any().sum()
 
-# Display KPIs in columns
+# Row 1: Primary KPIs
 kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
 
 with kpi_col1:
-    st.markdown('<div class="kpi-container">', unsafe_allow_html=True)
-    st.metric(
-        "🏗️ Delivered Weight",
-        f"{fmt_num(total_delivered_weight)} kg",
-        delta=f"{fmt_pct(weight_completion)} of contracted"
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">🏗️ TOTAL DELIVERED WEIGHT</div>
+        <div class="metric-value">{fmt_num(total_delivered_weight)} KG</div>
+        <div class="metric-delta">{fmt_pct(weight_completion)} OF CONTRACTED</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 with kpi_col2:
-    st.markdown('<div class="kpi-container">', unsafe_allow_html=True)
-    st.metric(
-        "📦 Delivered Quantity", 
-        fmt_num(total_delivered_qty, 0),
-        delta=f"{fmt_pct(qty_completion)} of contracted"
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">📦 TOTAL DELIVERED QUANTITY</div>
+        <div class="metric-value">{fmt_num(total_delivered_qty, 0)}</div>
+        <div class="metric-delta">{fmt_pct(qty_completion)} OF CONTRACTED</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 with kpi_col3:
-    st.markdown('<div class="kpi-container">', unsafe_allow_html=True)
-    st.metric(
-        "📊 Average Progress",
-        f"{fmt_pct(avg_progress)}",
-        delta=f"Across {len(data)} items"
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">📊 AVERAGE PROGRESS</div>
+        <div class="metric-value">{fmt_pct(avg_progress)}</div>
+        <div class="metric-delta">ACROSS {len(data):,} ITEMS</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 with kpi_col4:
-    st.markdown('<div class="kpi-container">', unsafe_allow_html=True)
-    st.metric(
-        "🚛 Active Trucks",
-        f"{active_trucks}",
-        delta=f"Out of {len(truck_cols)} total"
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">🚛 ACTIVE TRUCKS</div>
+        <div class="metric-value">{active_trucks}</div>
+        <div class="metric-delta">OUT OF {len(truck_cols)} TOTAL</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-# Additional KPIs row
+# Row 2: Business KPIs
 kpi_col5, kpi_col6, kpi_col7, kpi_col8 = st.columns(4)
 
 with kpi_col5:
-    unique_customers = len(data[COL_CUSTOMER].unique()) if COL_CUSTOMER in data.columns else 0
-    st.metric("🏢 Active Customers", f"{unique_customers}")
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">🏢 ACTIVE CUSTOMERS</div>
+        <div class="metric-value">{unique_customers}</div>
+        <div class="metric-delta">CUSTOMER PORTFOLIO</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 with kpi_col6:
-    unique_projects = len(data[COL_PROJECT].unique()) if COL_PROJECT in data.columns else 0
-    st.metric("📋 Active Projects", f"{unique_projects}")
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">📋 ACTIVE PROJECTS</div>
+        <div class="metric-value">{unique_projects}</div>
+        <div class="metric-delta">PROJECT PIPELINE</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 with kpi_col7:
-    unique_zones = len(data[COL_ZONE].unique()) if COL_ZONE in data.columns else 0
-    st.metric("🗺️ Active Zones", f"{unique_zones}")
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">🗺️ ACTIVE ZONES</div>
+        <div class="metric-value">{unique_zones}</div>
+        <div class="metric-delta">GEOGRAPHIC COVERAGE</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 with kpi_col8:
     unique_items = len(data[COL_ITEM].unique()) if COL_ITEM in data.columns else 0
-    st.metric("🔧 Item Types", f"{unique_items}")
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">🔧 ITEM TYPES</div>
+        <div class="metric-value">{unique_items}</div>
+        <div class="metric-delta">PRODUCT VARIETY</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# Row 3: Efficiency KPIs
+efficiency_col1, efficiency_col2, efficiency_col3, efficiency_col4 = st.columns(4)
+
+# Calculate additional efficiency metrics
+avg_weight_per_delivery = total_delivered_weight / len(data) if len(data) > 0 else 0
+total_balance_weight = float(data[COL_BALANCE_WEIGHT].sum(skipna=True)) if COL_BALANCE_WEIGHT in data.columns else 0
+avg_truck_load = (total_delivered_qty / active_trucks) if active_trucks > 0 else 0
+completion_projects = len(data[data[COL_PROGRESS] >= 0.95]) if COL_PROGRESS in data.columns else 0
+
+with efficiency_col1:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">⚡ AVG WEIGHT/DELIVERY</div>
+        <div class="metric-value">{fmt_num(avg_weight_per_delivery)} KG</div>
+        <div class="metric-delta">DELIVERY EFFICIENCY</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with efficiency_col2:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">⏳ REMAINING BALANCE</div>
+        <div class="metric-value">{fmt_num(total_balance_weight)} KG</div>
+        <div class="metric-delta">PENDING DELIVERY</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with efficiency_col3:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">🚛 AVG TRUCK LOAD</div>
+        <div class="metric-value">{fmt_num(avg_truck_load, 1)}</div>
+        <div class="metric-delta">UNITS PER TRUCK</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with efficiency_col4:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">✅ NEAR COMPLETION</div>
+        <div class="metric-value">{completion_projects}</div>
+        <div class="metric-delta">ITEMS >95% COMPLETE</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 st.markdown("---")
 
 # ---------------------------- Enhanced Visualizations ----------------------------
-st.markdown('<div class="section-header">📊 Analytics & Insights</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-header">📊 ANALYTICS & INSIGHTS</div>', unsafe_allow_html=True)
 
 # Create tabs for different analysis views
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🚛 Truck Analysis", "🗺️ Zone Performance", "📋 Project Progress", "📈 Trends", "🔧 Item Analysis"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🚛 TRUCK ANALYSIS", "🗺️ ZONE PERFORMANCE", "📋 PROJECT PROGRESS", "📈 TRENDS", "🔧 ITEM ANALYSIS"])
 
 with tab1:
-    st.subheader("Truck Utilization Analysis")
+    st.subheader("TRUCK UTILIZATION ANALYSIS")
     
     if truck_cols:
         # Calculate truck utilization
@@ -376,17 +569,22 @@ with tab1:
             if len(truck_utilization) > 0:
                 top_n = min(20, len(truck_utilization))
                 top_trucks = truck_utilization.head(top_n).reset_index()
-                top_trucks.columns = ["Truck", "Total_Qty"]
+                top_trucks.columns = ["TRUCK", "TOTAL_QTY"]
                 
                 fig_trucks = px.bar(
                     top_trucks, 
-                    x="Truck", 
-                    y="Total_Qty",
-                    title=f"Top {top_n} Trucks by Quantity Delivered",
-                    color="Total_Qty",
+                    x="TRUCK", 
+                    y="TOTAL_QTY",
+                    title=f"TOP {top_n} TRUCKS BY QUANTITY DELIVERED",
+                    color="TOTAL_QTY",
                     color_continuous_scale="viridis"
                 )
-                fig_trucks.update_layout(height=400, showlegend=False)
+                fig_trucks.update_layout(
+                    height=400, 
+                    showlegend=False,
+                    title_font_size=16,
+                    title_font_color="#1f77b4"
+                )
                 st.plotly_chart(fig_trucks, use_container_width=True)
         
         with col2:
@@ -395,30 +593,49 @@ with tab1:
                 fig_hist = px.histogram(
                     truck_utilization.values,
                     nbins=20,
-                    title="Truck Utilization Distribution",
-                    labels={"value": "Quantity Delivered", "count": "Number of Trucks"}
+                    title="TRUCK UTILIZATION DISTRIBUTION",
+                    labels={"value": "QUANTITY DELIVERED", "count": "NUMBER OF TRUCKS"}
                 )
-                fig_hist.update_layout(height=400)
+                fig_hist.update_layout(
+                    height=400,
+                    title_font_size=16,
+                    title_font_color="#1f77b4"
+                )
                 st.plotly_chart(fig_hist, use_container_width=True)
         
         # Truck efficiency metrics
-        st.subheader("Truck Efficiency Metrics")
+        st.subheader("TRUCK EFFICIENCY METRICS")
         col3, col4, col5 = st.columns(3)
         
         with col3:
             avg_utilization = truck_utilization.mean() if len(truck_utilization) > 0 else 0
-            st.metric("Average Truck Load", fmt_num(avg_utilization, 1))
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-title">📊 AVERAGE TRUCK LOAD</div>
+                <div class="metric-value">{fmt_num(avg_utilization, 1)}</div>
+            </div>
+            """, unsafe_allow_html=True)
         
         with col4:
             max_utilization = truck_utilization.max() if len(truck_utilization) > 0 else 0
-            st.metric("Max Truck Load", fmt_num(max_utilization, 1))
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-title">🔝 MAX TRUCK LOAD</div>
+                <div class="metric-value">{fmt_num(max_utilization, 1)}</div>
+            </div>
+            """, unsafe_allow_html=True)
         
         with col5:
             utilization_rate = (len(truck_utilization) / len(truck_cols) * 100) if len(truck_cols) > 0 else 0
-            st.metric("Truck Utilization Rate", f"{utilization_rate:.1f}%")
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-title">📈 UTILIZATION RATE</div>
+                <div class="metric-value">{utilization_rate:.1f}%</div>
+            </div>
+            """, unsafe_allow_html=True)
 
 with tab2:
-    st.subheader("Zone Performance Analysis")
+    st.subheader("ZONE PERFORMANCE ANALYSIS")
     
     if COL_ZONE in data.columns and COL_WEIGHT in data.columns:
         zone_analysis = data.groupby(COL_ZONE, dropna=False).agg({
@@ -428,8 +645,8 @@ with tab2:
             COL_CUSTOMER: 'nunique'
         }).round(2)
         
-        zone_analysis.columns = ['Total_Weight', 'Total_Qty', 'Avg_Progress', 'Unique_Customers']
-        zone_analysis = zone_analysis.sort_values('Total_Weight', ascending=False)
+        zone_analysis.columns = ['TOTAL_WEIGHT', 'TOTAL_QTY', 'AVG_PROGRESS', 'UNIQUE_CUSTOMERS']
+        zone_analysis = zone_analysis.sort_values('TOTAL_WEIGHT', ascending=False)
         
         col1, col2 = st.columns(2)
         
@@ -438,12 +655,16 @@ with tab2:
             fig_zone_weight = px.bar(
                 zone_analysis.reset_index(),
                 x=COL_ZONE,
-                y='Total_Weight',
-                title="Total Delivered Weight by Zone",
-                color='Total_Weight',
+                y='TOTAL_WEIGHT',
+                title="TOTAL DELIVERED WEIGHT BY ZONE",
+                color='TOTAL_WEIGHT',
                 color_continuous_scale="blues"
             )
-            fig_zone_weight.update_layout(height=400)
+            fig_zone_weight.update_layout(
+                height=400,
+                title_font_size=16,
+                title_font_color="#1f77b4"
+            )
             st.plotly_chart(fig_zone_weight, use_container_width=True)
         
         with col2:
@@ -451,25 +672,32 @@ with tab2:
             fig_zone_progress = px.bar(
                 zone_analysis.reset_index(),
                 x=COL_ZONE,
-                y='Avg_Progress',
-                title="Average Progress by Zone",
-                color='Avg_Progress',
+                y='AVG_PROGRESS',
+                title="AVERAGE PROGRESS BY ZONE",
+                color='AVG_PROGRESS',
                 color_continuous_scale="greens"
             )
-            fig_zone_progress.update_layout(height=400)
+            fig_zone_progress.update_layout(
+                height=400,
+                title_font_size=16,
+                title_font_color="#1f77b4"
+            )
             st.plotly_chart(fig_zone_progress, use_container_width=True)
         
         # Zone performance table
-        st.subheader("Zone Performance Summary")
-        zone_analysis['Avg_Progress'] = zone_analysis['Avg_Progress'] * 100
-        st.dataframe(zone_analysis.style.format({
-            'Total_Weight': '{:,.2f}',
-            'Total_Qty': '{:,.0f}',
-            'Avg_Progress': '{:.1f}%'
-        }))
+        st.subheader("ZONE PERFORMANCE SUMMARY")
+        zone_analysis['AVG_PROGRESS'] = zone_analysis['AVG_PROGRESS'] * 100
+        
+        # Create styled dataframe
+        styled_zone_df = zone_analysis.style.format({
+            'TOTAL_WEIGHT': '{:,.2f}',
+            'TOTAL_QTY': '{:,.0f}',
+            'AVG_PROGRESS': '{:.1f}%'
+        })
+        st.dataframe(styled_zone_df, height=300)
 
 with tab3:
-    st.subheader("Project Progress Tracking")
+    st.subheader("PROJECT PROGRESS TRACKING")
     
     if COL_PROJECT in data.columns and COL_PROGRESS in data.columns:
         project_progress = data.groupby(COL_PROJECT, dropna=False).agg({
@@ -480,8 +708,8 @@ with tab3:
             COL_ZONE: lambda x: ', '.join(x.unique())
         }).round(3)
         
-        project_progress.columns = ['Avg_Progress', 'Total_Weight', 'Total_Qty', 'Customer', 'Zones']
-        project_progress = project_progress.sort_values('Avg_Progress', ascending=True)
+        project_progress.columns = ['AVG_PROGRESS', 'TOTAL_WEIGHT', 'TOTAL_QTY', 'CUSTOMER', 'ZONES']
+        project_progress = project_progress.sort_values('AVG_PROGRESS', ascending=True)
         
         col1, col2 = st.columns(2)
         
@@ -489,20 +717,24 @@ with tab3:
             # Project progress chart
             fig_project = px.bar(
                 project_progress.reset_index().head(15),
-                x='Avg_Progress',
+                x='AVG_PROGRESS',
                 y=COL_PROJECT,
                 orientation='h',
-                title="Project Progress Status (Bottom 15)",
-                color='Avg_Progress',
+                title="PROJECT PROGRESS STATUS (BOTTOM 15)",
+                color='AVG_PROGRESS',
                 color_continuous_scale="reds"
             )
-            fig_project.update_layout(height=500)
+            fig_project.update_layout(
+                height=500,
+                title_font_size=16,
+                title_font_color="#1f77b4"
+            )
             st.plotly_chart(fig_project, use_container_width=True)
         
         with col2:
             # Project completion status
             progress_ranges = pd.cut(
-                project_progress['Avg_Progress'], 
+                project_progress['AVG_PROGRESS'], 
                 bins=[0, 0.25, 0.5, 0.75, 1.0], 
                 labels=['0-25%', '26-50%', '51-75%', '76-100%']
             )
@@ -511,38 +743,41 @@ with tab3:
             fig_pie = px.pie(
                 values=progress_counts.values,
                 names=progress_counts.index,
-                title="Project Completion Distribution"
+                title="PROJECT COMPLETION DISTRIBUTION"
             )
-            fig_pie.update_layout(height=400)
+            fig_pie.update_layout(
+                height=400,
+                title_font_size=16,
+                title_font_color="#1f77b4"
+            )
             st.plotly_chart(fig_pie, use_container_width=True)
         
         # Project details table
-        st.subheader("Project Details")
-        project_progress['Avg_Progress'] = project_progress['Avg_Progress'] * 100
-        st.dataframe(
-            project_progress.style.format({
-                'Avg_Progress': '{:.1f}%',
-                'Total_Weight': '{:,.2f}',
-                'Total_Qty': '{:,.0f}'
-            }),
-            height=300
-        )
+        st.subheader("PROJECT DETAILS")
+        project_progress['AVG_PROGRESS'] = project_progress['AVG_PROGRESS'] * 100
+        
+        styled_project_df = project_progress.style.format({
+            'AVG_PROGRESS': '{:.1f}%',
+            'TOTAL_WEIGHT': '{:,.2f}',
+            'TOTAL_QTY': '{:,.0f}'
+        })
+        st.dataframe(styled_project_df, height=300)
 
 with tab4:
-    st.subheader("Delivery Trends Over Time")
+    st.subheader("DELIVERY TRENDS OVER TIME")
     
-    if date_cols and active_date_col:
+    if date_cols and active_date_col and active_date_col != "NONE":
         # Create time series data
         data_with_dates = data.dropna(subset=[active_date_col])
-        data_with_dates['Date'] = pd.to_datetime(data_with_dates[active_date_col])
+        data_with_dates['DATE'] = pd.to_datetime(data_with_dates[active_date_col])
         
         if len(data_with_dates) > 0:
             # Daily aggregation
-            daily_stats = data_with_dates.groupby(data_with_dates['Date'].dt.date).agg({
+            daily_stats = data_with_dates.groupby(data_with_dates['DATE'].dt.date).agg({
                 COL_WEIGHT: 'sum',
                 COL_QTY: 'sum'
             }).reset_index()
-            daily_stats.columns = ['Date', 'Daily_Weight', 'Daily_Qty']
+            daily_stats.columns = ['DATE', 'DAILY_WEIGHT', 'DAILY_QTY']
             
             col1, col2 = st.columns(2)
             
@@ -550,43 +785,51 @@ with tab4:
                 # Weight trend
                 fig_weight_trend = px.line(
                     daily_stats,
-                    x='Date',
-                    y='Daily_Weight',
-                    title="Daily Delivered Weight Trend",
+                    x='DATE',
+                    y='DAILY_WEIGHT',
+                    title="DAILY DELIVERED WEIGHT TREND",
                     markers=True
                 )
-                fig_weight_trend.update_layout(height=400)
+                fig_weight_trend.update_layout(
+                    height=400,
+                    title_font_size=16,
+                    title_font_color="#1f77b4"
+                )
                 st.plotly_chart(fig_weight_trend, use_container_width=True)
             
             with col2:
                 # Quantity trend
                 fig_qty_trend = px.line(
                     daily_stats,
-                    x='Date',
-                    y='Daily_Qty',
-                    title="Daily Delivered Quantity Trend",
+                    x='DATE',
+                    y='DAILY_QTY',
+                    title="DAILY DELIVERED QUANTITY TREND",
                     markers=True,
                     color_discrete_sequence=['orange']
                 )
-                fig_qty_trend.update_layout(height=400)
+                fig_qty_trend.update_layout(
+                    height=400,
+                    title_font_size=16,
+                    title_font_color="#1f77b4"
+                )
                 st.plotly_chart(fig_qty_trend, use_container_width=True)
             
             # Cumulative progress
-            daily_stats['Cumulative_Weight'] = daily_stats['Daily_Weight'].cumsum()
-            daily_stats['Cumulative_Qty'] = daily_stats['Daily_Qty'].cumsum()
+            daily_stats['CUMULATIVE_WEIGHT'] = daily_stats['DAILY_WEIGHT'].cumsum()
+            daily_stats['CUMULATIVE_QTY'] = daily_stats['DAILY_QTY'].cumsum()
             
             fig_cumulative = make_subplots(
                 rows=2, cols=1,
-                subplot_titles=('Cumulative Weight Delivered', 'Cumulative Quantity Delivered'),
+                subplot_titles=('CUMULATIVE WEIGHT DELIVERED', 'CUMULATIVE QUANTITY DELIVERED'),
                 vertical_spacing=0.1
             )
             
             fig_cumulative.add_trace(
                 go.Scatter(
-                    x=daily_stats['Date'],
-                    y=daily_stats['Cumulative_Weight'],
+                    x=daily_stats['DATE'],
+                    y=daily_stats['CUMULATIVE_WEIGHT'],
                     mode='lines+markers',
-                    name='Weight (kg)',
+                    name='WEIGHT (KG)',
                     line=dict(color='blue')
                 ),
                 row=1, col=1
@@ -594,22 +837,67 @@ with tab4:
             
             fig_cumulative.add_trace(
                 go.Scatter(
-                    x=daily_stats['Date'],
-                    y=daily_stats['Cumulative_Qty'],
+                    x=daily_stats['DATE'],
+                    y=daily_stats['CUMULATIVE_QTY'],
                     mode='lines+markers',
-                    name='Quantity',
+                    name='QUANTITY',
                     line=dict(color='red')
                 ),
                 row=2, col=1
             )
             
-            fig_cumulative.update_layout(height=600, title_text="Cumulative Delivery Progress")
+            fig_cumulative.update_layout(
+                height=600, 
+                title_text="CUMULATIVE DELIVERY PROGRESS",
+                title_font_size=18,
+                title_font_color="#1f77b4"
+            )
             st.plotly_chart(fig_cumulative, use_container_width=True)
+            
+            # Time-based metrics
+            st.subheader("TIME-BASED PERFORMANCE METRICS")
+            time_col1, time_col2, time_col3, time_col4 = st.columns(4)
+            
+            with time_col1:
+                avg_daily_weight = daily_stats['DAILY_WEIGHT'].mean()
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">📊 AVG DAILY WEIGHT</div>
+                    <div class="metric-value">{fmt_num(avg_daily_weight)} KG</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with time_col2:
+                peak_daily_weight = daily_stats['DAILY_WEIGHT'].max()
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">🔝 PEAK DAILY WEIGHT</div>
+                    <div class="metric-value">{fmt_num(peak_daily_weight)} KG</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with time_col3:
+                active_days = len(daily_stats[daily_stats['DAILY_WEIGHT'] > 0])
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">📅 ACTIVE DELIVERY DAYS</div>
+                    <div class="metric-value">{active_days}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with time_col4:
+                date_range_days = (daily_stats['DATE'].max() - daily_stats['DATE'].min()).days
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">📈 DATE RANGE (DAYS)</div>
+                    <div class="metric-value">{date_range_days}</div>
+                </div>
+                """, unsafe_allow_html=True)
     else:
-        st.info("No date columns found for trend analysis.")
+        st.info("NO DATE COLUMNS FOUND FOR TREND ANALYSIS. PLEASE SELECT A DATE COLUMN IN THE FILTERS SECTION.")
 
 with tab5:
-    st.subheader("Item Analysis")
+    st.subheader("ITEM ANALYSIS")
     
     if COL_ITEM in data.columns:
         item_analysis = data.groupby(COL_ITEM, dropna=False).agg({
@@ -619,8 +907,8 @@ with tab5:
             COL_PROJECT: 'nunique'
         }).round(2)
         
-        item_analysis.columns = ['Total_Weight', 'Total_Qty', 'Avg_Progress', 'Project_Count']
-        item_analysis = item_analysis.sort_values('Total_Weight', ascending=False)
+        item_analysis.columns = ['TOTAL_WEIGHT', 'TOTAL_QTY', 'AVG_PROGRESS', 'PROJECT_COUNT']
+        item_analysis = item_analysis.sort_values('TOTAL_WEIGHT', ascending=False)
         
         col1, col2 = st.columns(2)
         
@@ -629,73 +917,83 @@ with tab5:
             fig_items = px.bar(
                 item_analysis.head(15).reset_index(),
                 x=COL_ITEM,
-                y='Total_Weight',
-                title="Top 15 Items by Weight Delivered",
-                color='Total_Weight',
+                y='TOTAL_WEIGHT',
+                title="TOP 15 ITEMS BY WEIGHT DELIVERED",
+                color='TOTAL_WEIGHT',
                 color_continuous_scale="viridis"
             )
             fig_items.update_xaxes(tickangle=45)
-            fig_items.update_layout(height=500)
+            fig_items.update_layout(
+                height=500,
+                title_font_size=16,
+                title_font_color="#1f77b4"
+            )
             st.plotly_chart(fig_items, use_container_width=True)
         
         with col2:
             # Item progress analysis
             fig_item_progress = px.scatter(
                 item_analysis.reset_index(),
-                x='Total_Weight',
-                y='Avg_Progress',
-                size='Total_Qty',
+                x='TOTAL_WEIGHT',
+                y='AVG_PROGRESS',
+                size='TOTAL_QTY',
                 hover_name=COL_ITEM,
-                title="Item Weight vs Progress (Bubble size = Quantity)",
-                color='Project_Count',
+                title="ITEM WEIGHT VS PROGRESS (BUBBLE SIZE = QUANTITY)",
+                color='PROJECT_COUNT',
                 color_continuous_scale="plasma"
             )
-            fig_item_progress.update_layout(height=500)
+            fig_item_progress.update_layout(
+                height=500,
+                title_font_size=16,
+                title_font_color="#1f77b4"
+            )
             st.plotly_chart(fig_item_progress, use_container_width=True)
         
         # Item performance table
-        st.subheader("Item Performance Summary")
-        item_analysis['Avg_Progress'] = item_analysis['Avg_Progress'] * 100
-        st.dataframe(
-            item_analysis.style.format({
-                'Total_Weight': '{:,.2f}',
-                'Total_Qty': '{:,.0f}',
-                'Avg_Progress': '{:.1f}%'
-            }),
-            height=300
-        )
+        st.subheader("ITEM PERFORMANCE SUMMARY")
+        item_analysis['AVG_PROGRESS'] = item_analysis['AVG_PROGRESS'] * 100
+        
+        styled_item_df = item_analysis.style.format({
+            'TOTAL_WEIGHT': '{:,.2f}',
+            'TOTAL_QTY': '{:,.0f}',
+            'AVG_PROGRESS': '{:.1f}%'
+        })
+        st.dataframe(styled_item_df, height=300)
 
 st.markdown("---")
 
-# ---------------------------- Advanced Pivot Analysis ----------------------------
-st.markdown('<div class="section-header">🔄 Advanced Pivot Analysis</div>', unsafe_allow_html=True)
+# ---------------------------- Enhanced Pivot Analysis ----------------------------
+st.markdown('<div class="section-header">🔄 ADVANCED PIVOT ANALYSIS</div>', unsafe_allow_html=True)
 
 # Enhanced pivot builder
-pivot_col1, pivot_col2, pivot_col3 = st.columns(3)
+pivot_col1, pivot_col2, pivot_col3, pivot_col4 = st.columns(4)
 
 with pivot_col1:
     available_dims = [c for c in [COL_CUSTOMER, COL_PROJECT, COL_ZONE, COL_ITEM] if c in data.columns]
-    pivot_rows = st.multiselect("📊 Rows (Group by)", available_dims, default=[COL_ZONE] if COL_ZONE in available_dims else [])
+    pivot_rows = st.multiselect("📊 ROWS (GROUP BY)", available_dims, default=[COL_ZONE] if COL_ZONE in available_dims else [])
 
 with pivot_col2:
     remaining_dims = [c for c in available_dims if c not in pivot_rows]
-    pivot_cols = st.multiselect("📈 Columns", remaining_dims, default=[])
+    pivot_cols = st.multiselect("📈 COLUMNS", remaining_dims, default=[])
 
 with pivot_col3:
     value_options = [c for c in [COL_WEIGHT, COL_QTY, COL_PROGRESS] if c in data.columns]
-    pivot_value = st.selectbox("📋 Values", value_options, index=0 if value_options else 0)
-    pivot_agg = st.selectbox("🔢 Aggregation", ['sum', 'mean', 'count', 'min', 'max'], index=0)
+    pivot_value = st.selectbox("📋 VALUES", value_options, index=0 if value_options else 0)
+
+with pivot_col4:
+    pivot_agg = st.selectbox("🔢 AGGREGATION", ['SUM', 'MEAN', 'COUNT', 'MIN', 'MAX'], index=0)
 
 # Create pivot table
 if pivot_rows or pivot_cols:
     try:
+        agg_func = pivot_agg.lower()
         if pivot_value and pivot_value in data.columns:
             pivot_table = pd.pivot_table(
                 data,
                 index=pivot_rows if pivot_rows else None,
                 columns=pivot_cols if pivot_cols else None,
                 values=pivot_value,
-                aggfunc=pivot_agg,
+                aggfunc=agg_func,
                 fill_value=0,
                 dropna=False
             )
@@ -708,128 +1006,203 @@ if pivot_rows or pivot_cols:
                 fill_value=0
             )
         
-        st.subheader("Pivot Table Results")
-        st.dataframe(pivot_table, height=400)
+        st.subheader("PIVOT TABLE RESULTS")
+        
+        # Format pivot table based on data type
+        if pivot_value in [COL_WEIGHT, COL_QTY]:
+            formatted_pivot = pivot_table.style.format('{:,.2f}')
+        elif pivot_value == COL_PROGRESS:
+            formatted_pivot = pivot_table.style.format('{:.2%}')
+        else:
+            formatted_pivot = pivot_table.style.format('{:,.0f}')
+        
+        st.dataframe(formatted_pivot, height=400)
         
         # Download pivot table
         pivot_csv = pivot_table.to_csv()
         st.download_button(
-            "📥 Download Pivot Table",
+            "📥 DOWNLOAD PIVOT TABLE",
             pivot_csv,
-            "fulaz_pivot_analysis.csv",
-            "text/csv"
+            "FULAZ_PIVOT_ANALYSIS.CSV",
+            "text/csv",
+            key="pivot_download"
         )
         
     except Exception as e:
-        st.error(f"Error creating pivot table: {str(e)}")
+        st.error(f"ERROR CREATING PIVOT TABLE: {str(e)}")
+else:
+    st.info("SELECT ROWS OR COLUMNS TO CREATE A PIVOT TABLE")
 
 st.markdown("---")
 
-# ---------------------------- Data Export Section ----------------------------
-st.markdown('<div class="section-header">📤 Data Export & Summary</div>', unsafe_allow_html=True)
+# ---------------------------- Enhanced Export Section ----------------------------
+st.markdown('<div class="section-header">📤 DATA EXPORT & REPORTING</div>', unsafe_allow_html=True)
 
-export_col1, export_col2, export_col3 = st.columns(3)
+export_col1, export_col2, export_col3, export_col4 = st.columns(4)
 
 with export_col1:
     # Filtered data download
     filtered_csv = data.to_csv(index=False)
     st.download_button(
-        "📥 Download Filtered Data (CSV)",
+        "📥 DOWNLOAD FILTERED DATA",
         filtered_csv,
-        "fulaz_filtered_delivery_data.csv",
-        "text/csv"
+        "FULAZ_FILTERED_DELIVERY_DATA.CSV",
+        "text/csv",
+        key="filtered_download",
+        help="DOWNLOAD THE CURRENTLY FILTERED DATASET"
     )
 
 with export_col2:
     # Summary report
-    if st.button("📊 Generate Summary Report"):
+    if st.button("📊 GENERATE SUMMARY REPORT", key="summary_btn"):
         summary_data = {
-            'Metric': [
-                'Total Records',
-                'Total Delivered Weight (kg)',
-                'Total Delivered Quantity',
-                'Average Progress (%)',
-                'Active Customers',
-                'Active Projects', 
-                'Active Zones',
-                'Active Trucks'
+            'METRIC': [
+                'TOTAL RECORDS',
+                'TOTAL DELIVERED WEIGHT (KG)',
+                'TOTAL DELIVERED QUANTITY',
+                'AVERAGE PROGRESS (%)',
+                'WEIGHT COMPLETION RATE (%)',
+                'QUANTITY COMPLETION RATE (%)',
+                'ACTIVE CUSTOMERS',
+                'ACTIVE PROJECTS', 
+                'ACTIVE ZONES',
+                'ACTIVE TRUCKS',
+                'ACTIVE DELIVERY DAYS',
+                'AVERAGE WEIGHT PER DELIVERY'
             ],
-            'Value': [
+            'VALUE': [
                 f"{len(data):,}",
                 f"{total_delivered_weight:,.2f}",
                 f"{total_delivered_qty:,.0f}",
                 f"{avg_progress:.1f}%",
+                f"{weight_completion:.1f}%",
+                f"{qty_completion:.1f}%",
                 f"{unique_customers}",
                 f"{unique_projects}",
                 f"{unique_zones}",
-                f"{active_trucks}"
+                f"{active_trucks}",
+                f"{len(data) if not date_cols else len(data):,}",
+                f"{avg_weight_per_delivery:.2f}"
             ]
         }
         summary_df = pd.DataFrame(summary_data)
         summary_csv = summary_df.to_csv(index=False)
         st.download_button(
-            "📥 Download Summary Report",
+            "📥 DOWNLOAD SUMMARY",
             summary_csv,
-            "fulaz_delivery_summary.csv",
-            "text/csv"
+            "FULAZ_DELIVERY_SUMMARY_REPORT.CSV",
+            "text/csv",
+            key="summary_download"
         )
 
 with export_col3:
     # Truck utilization export
-    if truck_cols and st.button("🚛 Export Truck Data"):
+    if truck_cols and st.button("🚛 EXPORT TRUCK DATA", key="truck_btn"):
         truck_data = data[truck_cols].fillna(0)
         truck_summary = pd.DataFrame({
-            'Truck': truck_cols,
-            'Total_Deliveries': [truck_data[col].sum() for col in truck_cols],
-            'Active_Days': [(truck_data[col] > 0).sum() for col in truck_cols]
+            'TRUCK': truck_cols,
+            'TOTAL_DELIVERIES': [truck_data[col].sum() for col in truck_cols],
+            'ACTIVE_DAYS': [(truck_data[col] > 0).sum() for col in truck_cols],
+            'UTILIZATION_RATE': [(truck_data[col] > 0).mean() * 100 for col in truck_cols]
         })
+        truck_summary = truck_summary.sort_values('TOTAL_DELIVERIES', ascending=False)
         truck_csv = truck_summary.to_csv(index=False)
         st.download_button(
-            "📥 Download Truck Analysis",
+            "📥 DOWNLOAD TRUCK ANALYSIS",
             truck_csv,
-            "fulaz_truck_utilization.csv",
-            "text/csv"
+            "FULAZ_TRUCK_UTILIZATION_ANALYSIS.CSV",
+            "text/csv",
+            key="truck_download"
+        )
+
+with export_col4:
+    # Zone performance export
+    if COL_ZONE in data.columns and st.button("🗺️ EXPORT ZONE DATA", key="zone_btn"):
+        zone_export = data.groupby(COL_ZONE, dropna=False).agg({
+            COL_WEIGHT: ['sum', 'mean'],
+            COL_QTY: ['sum', 'mean'],
+            COL_PROGRESS: 'mean',
+            COL_CUSTOMER: 'nunique',
+            COL_PROJECT: 'nunique'
+        }).round(2)
+        
+        zone_export.columns = ['TOTAL_WEIGHT', 'AVG_WEIGHT', 'TOTAL_QTY', 'AVG_QTY', 'AVG_PROGRESS', 'CUSTOMERS', 'PROJECTS']
+        zone_csv = zone_export.to_csv()
+        st.download_button(
+            "📥 DOWNLOAD ZONE ANALYSIS",
+            zone_csv,
+            "FULAZ_ZONE_PERFORMANCE_ANALYSIS.CSV",
+            "text/csv",
+            key="zone_download"
         )
 
 # ---------------------------- Data Preview ----------------------------
-with st.expander("🔍 Filtered Data Preview", expanded=False):
-    st.dataframe(data, height=400, use_container_width=True)
-    st.caption(f"Showing {len(data):,} records after applying filters")
+with st.expander("🔍 FILTERED DATA PREVIEW", expanded=False):
+    st.markdown("### CURRENT FILTERED DATASET")
+    
+    # Display sample of data with better formatting
+    if len(data) > 0:
+        preview_data = data.head(100)  # Show first 100 rows
+        st.dataframe(
+            preview_data, 
+            height=400, 
+            use_container_width=True
+        )
+        st.markdown(f"**SHOWING FIRST 100 ROWS OF {len(data):,} TOTAL FILTERED RECORDS**")
+    else:
+        st.warning("NO DATA AVAILABLE AFTER APPLYING FILTERS")
 
 # ---------------------------- Footer ----------------------------
 st.markdown("---")
 st.markdown("""
-<div style='text-align: center; color: #666; padding: 20px;'>
-    <strong>🏗️ FULAZ Delivery MasterLog Dashboard</strong><br>
-    Enhanced analytics for construction delivery management<br>
-    <em>Built with Streamlit & Plotly | Last updated: September 2025</em>
+<div style='text-align: center; color: #666; padding: 20px; background: linear-gradient(90deg, #f8f9fa, #e9ecef); border-radius: 10px;'>
+    <strong style='font-size: 1.2rem; color: #1f77b4;'>🏗️ FULAZ DELIVERY MASTERLOG DASHBOARD</strong><br>
+    <strong style='color: #495057;'>PROFESSIONAL CONSTRUCTION DELIVERY ANALYTICS PLATFORM</strong><br>
+    <em style='color: #6c757d;'>POWERED BY STREAMLIT & PLOTLY | ENHANCED SEPTEMBER 2025</em><br><br>
+    
+    <div style='display: flex; justify-content: center; gap: 30px; margin-top: 15px;'>
+        <span style='color: #28a745; font-weight: bold;'>📊 REAL-TIME ANALYTICS</span>
+        <span style='color: #dc3545; font-weight: bold;'>🚛 FLEET MANAGEMENT</span>
+        <span style='color: #fd7e14; font-weight: bold;'>📈 PROGRESS TRACKING</span>
+        <span style='color: #6f42c1; font-weight: bold;'>🗺️ ZONE ANALYSIS</span>
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
-# Performance tips
-with st.expander("💡 Dashboard Tips", expanded=False):
+# Enhanced performance tips
+with st.expander("💡 DASHBOARD USAGE GUIDE", expanded=False):
     st.markdown("""
-    ### Getting the Most from Your Dashboard:
+    ## 🎯 **DASHBOARD OPTIMIZATION GUIDE**
     
-    **🔍 Filtering:**
-    - Use date ranges to focus on specific time periods
-    - Combine multiple filters for detailed analysis
-    - "All" selections show complete dataset
+    ### **🔍 ADVANCED FILTERING:**
+    - **HEADER DATES**: USE DATES EXTRACTED FROM FIRST ROW OF EXCEL
+    - **DATE COLUMNS**: SELECT ANY DATE COLUMN FOR TIME FILTERING
+    - **BUSINESS FILTERS**: COMBINE CUSTOMER, ZONE, PROJECT & ITEM FILTERS
+    - **ALL CAPS FORMATTING**: PROFESSIONAL REPORT PRESENTATION
     
-    **📊 Analytics Tabs:**
-    - **Truck Analysis**: Monitor fleet utilization and efficiency
-    - **Zone Performance**: Compare regional delivery performance  
-    - **Project Progress**: Track individual project completion
-    - **Trends**: Analyze delivery patterns over time
-    - **Item Analysis**: Understand material-specific metrics
+    ### **📊 ANALYTICS SECTIONS:**
+    - **🚛 TRUCK ANALYSIS**: MONITOR 150+ TRUCK FLEET EFFICIENCY
+    - **🗺️ ZONE PERFORMANCE**: MAKKAH, JEDDAH, RABIGH COMPARISON  
+    - **📋 PROJECT PROGRESS**: TRACK INDIVIDUAL PROJECT STATUS
+    - **📈 TRENDS**: ANALYZE DELIVERY PATTERNS OVER TIME
+    - **🔧 ITEM ANALYSIS**: TRUSS, COLUMN, BEAM PERFORMANCE
     
-    **📤 Export Options:**
-    - Download filtered data for external analysis
-    - Generate summary reports for stakeholders
-    - Export pivot tables for custom analysis
+    ### **📈 METRIC CARDS:**
+    - **PRIMARY KPIs**: WEIGHT, QUANTITY, PROGRESS, TRUCKS
+    - **BUSINESS KPIs**: CUSTOMERS, PROJECTS, ZONES, ITEMS
+    - **EFFICIENCY KPIs**: AVERAGES, BALANCE, COMPLETION RATES
+    - **HOVER EFFECTS**: INTERACTIVE CARD ANIMATIONS
     
-    **⚡ Performance:**
-    - Dashboard updates automatically when filters change
-    - Large datasets may take a few seconds to process
-    - Use date filters to improve loading speed
+    ### **📤 EXPORT OPTIONS:**
+    - **FILTERED DATA**: CSV EXPORT OF CURRENT VIEW
+    - **SUMMARY REPORT**: COMPREHENSIVE METRICS REPORT
+    - **TRUCK ANALYSIS**: FLEET UTILIZATION DATA
+    - **ZONE ANALYSIS**: GEOGRAPHIC PERFORMANCE DATA
+    - **PIVOT TABLES**: CUSTOM ANALYSIS EXPORTS
+    
+    ### **⚡ PERFORMANCE TIPS:**
+    - **FILTER FIRST**: USE DATE RANGES FOR FASTER LOADING
+    - **PROGRESSIVE FILTERING**: ADD FILTERS STEP BY STEP
+    - **EXPORT REGULARLY**: SAVE FILTERED VIEWS FOR REPORTING
+    - **USE TABS**: NAVIGATE BETWEEN ANALYSIS SECTIONS
     """)
