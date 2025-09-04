@@ -125,7 +125,7 @@ def _get_upload_bytes(uploaded_file_or_url) -> Tuple[bytes, str]:
     Returns (file_bytes, filename). Accepts a URL string (http/https) or a file-like.
     """
     # URL string case
-    if isinstance(uploaded_file_or_url, str) and uploaded_file_or_url.lower().startswith(("http://", "https://")):
+    if isinstance(uploaded_file_or_url, str) and uploaded_file_or_url.lower().startsWith(("http://", "https://")):
         req = Request(uploaded_file_or_url, headers={"User-Agent": "Mozilla/5.0"})
         with urlopen(req) as resp:
             content = resp.read()
@@ -270,10 +270,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------------------- Sidebar (no upload; show source info) ----------------------------
-st.sidebar.markdown("### 📄 DATA SOURCE")
-st.sidebar.write("Loading automatically from:")
-st.sidebar.code(DATA_URL, language="text")
+# ---------------------------- Sidebar (no upload; no source reveal) ----------------------------
+# (Intentionally blank sidebar except for sheet chooser)
 
 # ---------------------------- Peek sheet names from URL ----------------------------
 try:
@@ -365,8 +363,7 @@ with date_col1:
                 st.warning("No matching header-date columns found for your selection.")
 
 # with date_col2:  (HIDDEN: DATE COLUMN selector removed per request)
-# We intentionally do not render the "📅 DATE COLUMN" selectbox.
-# Keep the placeholders to preserve layout (empty col2/col3/col4 when header filter not used).
+# Keep layout placeholders only.
 
 # Row 2: Business filters
 st.markdown("#### 🏢 BUSINESS DIMENSION FILTERS")
@@ -418,14 +415,11 @@ st.markdown('</div>', unsafe_allow_html=True)
 # ---------------------------- KPIs ----------------------------
 st.markdown('<div class="section-header">📈 KEY PERFORMANCE INDICATORS</div>', unsafe_allow_html=True)
 
-COL_WEIGHT = "DELIVERED WEIGHT"
-COL_QTY = "DELIVERED QTY"
-
 total_delivered_weight = float(data[COL_WEIGHT].sum(skipna=True)) if COL_WEIGHT in data.columns else 0.0
 total_delivered_qty = float(data[COL_QTY].sum(skipna=True)) if COL_QTY in data.columns else 0.0
-total_contracted_weight = float(data.get("CONTRACTED WEIGHT", pd.Series(dtype=float)).sum(skipna=True)) if "CONTRACTED WEIGHT" in data.columns else 0.0
-total_contracted_qty = float(data.get("CONTRACTED QTY", pd.Series(dtype=float)).sum(skipna=True)) if "CONTRACTED QTY" in data.columns else 0.0
-avg_progress = float(data["PROGRESS %"].mean(skipna=True) * 100) if "PROGRESS %" in data.columns else 0.0
+total_contracted_weight = float(data.get(COL_CONTRACTED_WEIGHT, pd.Series(dtype=float)).sum(skipna=True)) if COL_CONTRACTED_WEIGHT in data.columns else 0.0
+total_contracted_qty = float(data.get(COL_CONTRACTED_QTY, pd.Series(dtype=float)).sum(skipna=True)) if COL_CONTRACTED_QTY in data.columns else 0.0
+avg_progress = float(data[COL_PROGRESS].mean(skipna=True) * 100) if COL_PROGRESS in data.columns else 0.0
 
 weight_completion = (total_delivered_weight / total_contracted_weight * 100) if total_contracted_weight > 0 else 0.0
 qty_completion = (total_delivered_qty / total_contracted_qty * 100) if total_contracted_qty > 0 else 0.0
@@ -495,7 +489,7 @@ with kpi_col7:
     </div>
     """, unsafe_allow_html=True)
 with kpi_col8:
-    unique_items = len(data["ITEM NAME"].unique()) if "ITEM NAME" in data.columns else 0
+    unique_items = len(data[COL_ITEM].unique()) if COL_ITEM in data.columns else 0
     st.markdown(f"""
     <div class="metric-card">
         <div class="metric-title">🔧 ITEM TYPES</div>
@@ -506,9 +500,9 @@ with kpi_col8:
 
 efficiency_col1, efficiency_col2, efficiency_col3, efficiency_col4 = st.columns(4)
 avg_weight_per_delivery = (total_delivered_weight / len(data)) if len(data) > 0 else 0.0
-total_balance_weight = float(data.get("BALANCE WEIGHT", pd.Series(dtype=float)).sum(skipna=True)) if "BALANCE WEIGHT" in data.columns else 0.0
+total_balance_weight = float(data.get(COL_BALANCE_WEIGHT, pd.Series(dtype=float)).sum(skipna=True)) if COL_BALANCE_WEIGHT in data.columns else 0.0
 avg_truck_load = (total_delivered_qty / active_trucks) if active_trucks > 0 else 0.0
-completion_projects = len(data[data["PROGRESS %"] >= 0.95]) if "PROGRESS %" in data.columns else 0
+completion_projects = len(data[data[COL_PROGRESS] >= 0.95]) if COL_PROGRESS in data.columns else 0
 
 with efficiency_col1:
     st.markdown(f"""
@@ -606,25 +600,25 @@ with tab1:
 
 with tab2:
     st.subheader("ZONE PERFORMANCE ANALYSIS")
-    if "ZONE / LOCATION" in data.columns and "DELIVERED WEIGHT" in data.columns:
-        zone_analysis = data.groupby("ZONE / LOCATION", dropna=False).agg({
-            "DELIVERED WEIGHT": 'sum',
-            "DELIVERED QTY": 'sum',
-            "PROGRESS %": 'mean',
-            "CUSTOMER NAME": 'nunique'
+    if COL_ZONE in data.columns and COL_WEIGHT in data.columns:
+        zone_analysis = data.groupby(COL_ZONE, dropna=False).agg({
+            COL_WEIGHT: 'sum',
+            COL_QTY: 'sum',
+            COL_PROGRESS: 'mean',
+            COL_CUSTOMER: 'nunique'
         }).round(2)
         zone_analysis.columns = ['TOTAL_WEIGHT', 'TOTAL_QTY', 'AVG_PROGRESS', 'UNIQUE_CUSTOMERS']
         zone_analysis = zone_analysis.sort_values('TOTAL_WEIGHT', ascending=False)
 
         col1, col2 = st.columns(2)
         with col1:
-            fig_zone_weight = px.bar(zone_analysis.reset_index(), x="ZONE / LOCATION", y='TOTAL_WEIGHT',
+            fig_zone_weight = px.bar(zone_analysis.reset_index(), x=COL_ZONE, y='TOTAL_WEIGHT',
                                      title="TOTAL DELIVERED WEIGHT BY ZONE",
                                      color='TOTAL_WEIGHT', color_continuous_scale="blues")
             fig_zone_weight.update_layout(height=400, title_font_size=16, title_font_color="#1f77b4")
             st.plotly_chart(fig_zone_weight, use_container_width=True)
         with col2:
-            fig_zone_progress = px.bar(zone_analysis.reset_index(), x="ZONE / LOCATION", y='AVG_PROGRESS',
+            fig_zone_progress = px.bar(zone_analysis.reset_index(), x=COL_ZONE, y='AVG_PROGRESS',
                                        title="AVERAGE PROGRESS BY ZONE",
                                        color='AVG_PROGRESS', color_continuous_scale="greens")
             fig_zone_progress.update_layout(height=400, title_font_size=16, title_font_color="#1f77b4")
@@ -641,13 +635,13 @@ with tab2:
 
 with tab3:
     st.subheader("PROJECT PROGRESS TRACKING")
-    if "PROJECT NAME" in data.columns and "PROGRESS %" in data.columns:
-        project_progress = data.groupby("PROJECT NAME", dropna=False).agg({
-            "PROGRESS %": 'mean',
-            "DELIVERED WEIGHT": 'sum',
-            "DELIVERED QTY": 'sum',
-            "CUSTOMER NAME": 'first',
-            "ZONE / LOCATION": lambda x: ', '.join(pd.Series(x).astype(str).unique())
+    if COL_PROJECT in data.columns and COL_PROGRESS in data.columns:
+        project_progress = data.groupby(COL_PROJECT, dropna=False).agg({
+            COL_PROGRESS: 'mean',
+            COL_WEIGHT: 'sum',
+            COL_QTY: 'sum',
+            COL_CUSTOMER: 'first',
+            COL_ZONE: lambda x: ', '.join(pd.Series(x).astype(str).unique())
         }).round(3)
         project_progress.columns = ['AVG_PROGRESS', 'TOTAL_WEIGHT', 'TOTAL_QTY', 'CUSTOMER', 'ZONES']
         project_progress = project_progress.sort_values('AVG_PROGRESS', ascending=True)
@@ -655,7 +649,7 @@ with tab3:
         col1, col2 = st.columns(2)
         with col1:
             fig_project = px.bar(project_progress.reset_index().head(15),
-                                 x='AVG_PROGRESS', y="PROJECT NAME", orientation='h',
+                                 x='AVG_PROGRESS', y=COL_PROJECT, orientation='h',
                                  title="PROJECT PROGRESS STATUS (BOTTOM 15)",
                                  color='AVG_PROGRESS', color_continuous_scale="reds")
             fig_project.update_layout(height=500, title_font_size=16, title_font_color="#1f77b4")
@@ -681,17 +675,16 @@ with tab3:
 
 with tab4:
     st.subheader("DELIVERY TRENDS OVER TIME")
-    # DATE COLUMN selector is hidden; therefore we show an info hint here
     st.info("DATE COLUMN selection is disabled. Use the HEADER DATES filter above to focus the dataset.")
 
 with tab5:
     st.subheader("ITEM ANALYSIS")
-    if "ITEM NAME" in data.columns:
-        item_analysis = data.groupby("ITEM NAME", dropna=False).agg({
-            "DELIVERED WEIGHT": 'sum',
-            "DELIVERED QTY": 'sum',
-            "PROGRESS %": 'mean',
-            "PROJECT NAME": 'nunique'
+    if COL_ITEM in data.columns:
+        item_analysis = data.groupby(COL_ITEM, dropna=False).agg({
+            COL_WEIGHT: 'sum',
+            COL_QTY: 'sum',
+            COL_PROGRESS: 'mean',
+            COL_PROJECT: 'nunique'
         }).round(2)
         item_analysis.columns = ['TOTAL_WEIGHT', 'TOTAL_QTY', 'AVG_PROGRESS', 'PROJECT_COUNT']
         item_analysis = item_analysis.sort_values('TOTAL_WEIGHT', ascending=False)
@@ -699,7 +692,7 @@ with tab5:
         col1, col2 = st.columns(2)
         with col1:
             fig_items = px.bar(item_analysis.head(15).reset_index(),
-                               x="ITEM NAME", y='TOTAL_WEIGHT',
+                               x=COL_ITEM, y='TOTAL_WEIGHT',
                                title="TOP 15 ITEMS BY WEIGHT DELIVERED",
                                color='TOTAL_WEIGHT', color_continuous_scale="viridis")
             fig_items.update_xaxes(tickangle=45)
@@ -708,7 +701,7 @@ with tab5:
         with col2:
             fig_item_progress = px.scatter(item_analysis.reset_index(),
                                            x='TOTAL_WEIGHT', y='AVG_PROGRESS',
-                                           size='TOTAL_QTY', hover_name="ITEM NAME",
+                                           size='TOTAL_QTY', hover_name=COL_ITEM,
                                            title="ITEM WEIGHT VS PROGRESS (BUBBLE SIZE = QUANTITY)",
                                            color='PROJECT_COUNT', color_continuous_scale="plasma")
             fig_item_progress.update_layout(height=500, title_font_size=16, title_font_color="#1f77b4")
@@ -730,13 +723,13 @@ st.markdown('<div class="section-header">🔄 ADVANCED PIVOT ANALYSIS</div>', un
 
 pivot_col1, pivot_col2, pivot_col3, pivot_col4 = st.columns(4)
 with pivot_col1:
-    available_dims = [c for c in ["CUSTOMER NAME", "PROJECT NAME", "ZONE / LOCATION", "ITEM NAME"] if c in data.columns]
-    pivot_rows = st.multiselect("📊 ROWS (GROUP BY)", available_dims, default=["ZONE / LOCATION"] if "ZONE / LOCATION" in available_dims else [])
+    available_dims = [c for c in [COL_CUSTOMER, COL_PROJECT, COL_ZONE, COL_ITEM] if c in data.columns]
+    pivot_rows = st.multiselect("📊 ROWS (GROUP BY)", available_dims, default=[COL_ZONE] if COL_ZONE in available_dims else [])
 with pivot_col2:
     remaining_dims = [c for c in available_dims if c not in pivot_rows]
     pivot_cols = st.multiselect("📈 COLUMNS", remaining_dims, default=[])
 with pivot_col3:
-    value_options = [c for c in ["DELIVERED WEIGHT", "DELIVERED QTY", "PROGRESS %"] if c in data.columns]
+    value_options = [c for c in [COL_WEIGHT, COL_QTY, COL_PROGRESS] if c in data.columns]
     pivot_value = st.selectbox("📋 VALUES", value_options if value_options else [""], index=0)
 with pivot_col4:
     pivot_agg = st.selectbox("🔢 AGGREGATION", ['SUM', 'MEAN', 'COUNT', 'MIN', 'MAX'], index=0)
@@ -764,9 +757,9 @@ if pivot_rows or pivot_cols:
             )
 
         st.subheader("PIVOT TABLE RESULTS")
-        if pivot_value in ["DELIVERED WEIGHT", "DELIVERED QTY"]:
+        if pivot_value in [COL_WEIGHT, COL_QTY]:
             formatted_pivot = pivot_table.style.format('{:,.2f}')
-        elif pivot_value == "PROGRESS %":
+        elif pivot_value == COL_PROGRESS:
             formatted_pivot = pivot_table.style.format('{:.2%}')
         else:
             formatted_pivot = pivot_table.style.format('{:,.0f}')
@@ -862,13 +855,13 @@ with export_col3:
         )
 
 with export_col4:
-    if "ZONE / LOCATION" in data.columns and st.button("🗺️ EXPORT ZONE DATA", key="zone_btn"):
-        zone_export = data.groupby("ZONE / LOCATION", dropna=False).agg({
-            "DELIVERED WEIGHT": ['sum', 'mean'],
-            "DELIVERED QTY": ['sum', 'mean'],
-            "PROGRESS %": 'mean',
-            "CUSTOMER NAME": 'nunique',
-            "PROJECT NAME": 'nunique'
+    if COL_ZONE in data.columns and st.button("🗺️ EXPORT ZONE DATA", key="zone_btn"):
+        zone_export = data.groupby(COL_ZONE, dropna=False).agg({
+            COL_WEIGHT: ['sum', 'mean'],
+            COL_QTY: ['sum', 'mean'],
+            COL_PROGRESS: 'mean',
+            COL_CUSTOMER: 'nunique',
+            COL_PROJECT: 'nunique'
         }).round(2)
         zone_export.columns = ['TOTAL_WEIGHT', 'AVG_WEIGHT', 'TOTAL_QTY', 'AVG_QTY', 'AVG_PROGRESS', 'CUSTOMERS', 'PROJECTS']
         zone_csv = zone_export.to_csv()
