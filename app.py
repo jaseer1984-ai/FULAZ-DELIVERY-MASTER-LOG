@@ -2,28 +2,31 @@
 # Excel → Streamlit Dashboard for Delivery MasterLog (Trucks, Weight, Progress)
 # - Robust Excel loader (.xlsx via openpyxl, .xls via xlrd)
 # - Auto-detects header row (tries row 3, then 2, then 1 in Excel terms)
-# - KPIs: Delivered Weight, Delivered Qty, Avg Progress %
+# - Filters AT TOP: Date range, Zone/Location, Item Name
+# - KPIs react to filters: Delivered Weight, Delivered Qty, Avg Progress %
 # - Charts: Top Trucks, Weight by Zone/Location, Weight by Item Name
-# - Pivot builder + filtered download
-# Author: AI Assistant | Last updated: 2025-09-03
+# - Pivot builder: safe when no Rows/Columns chosen (no-crash summary)
+# - Filtered CSV download + preview
+# Author: AI Assistant | Last updated: 2025-09-04
 
 import io
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-
 # ---------------------------- Config & Helpers ----------------------------
 st.set_page_config(page_title="Delivery MasterLog — Dashboard", layout="wide", page_icon="📦")
+
 
 def fmt_num(x, dec=2):
     try:
         return f"{float(x):,.{dec}f}"
     except Exception:
         return "--"
+
 
 @st.cache_data(show_spinner=False)
 def load_excel(file, sheet_name: Optional[str] = None) -> pd.DataFrame:
@@ -34,25 +37,22 @@ def load_excel(file, sheet_name: Optional[str] = None) -> pd.DataFrame:
     - Attempts headers at Excel rows: 3 (header=2), then 2 (header=1), then 1 (header=0)
     - Returns a dataframe with stripped column names
     """
-    def read_xls(excel_file: pd.ExcelFile, sheet_name: Optional[str]) -> pd.DataFrame:
-        target_sheet = sheet_name or excel_file.sheet_names[0]
-        # Try header row 3 → 2 → 1 (0-indexed: 2,1,0)
+    def read_xls(excel_file: pd.ExcelFile, sheet_nm: Optional[str]) -> pd.DataFrame:
+        target_sheet = sheet_nm or excel_file.sheet_names[0]
         for hdr in (2, 1, 0):
             try:
                 df_try = excel_file.parse(target_sheet, header=hdr)
                 df_try.columns = [str(c).strip() for c in df_try.columns]
-                # Accept if at least a few non-"Unnamed" columns are present
                 good_cols = sum(not str(c).lower().startswith("unnamed") for c in df_try.columns)
                 if good_cols >= 3:
                     return df_try
             except Exception:
                 pass
-        # Fallback: default parse
         df_fallback = excel_file.parse(target_sheet)
         df_fallback.columns = [str(c).strip() for c in df_fallback.columns]
         return df_fallback
 
-    # If path-like string/bytes
+    # If path-like
     if isinstance(file, (str, bytes)):
         path_str = file if isinstance(file, str) else ""
         if path_str.lower().endswith(".xls"):
@@ -61,14 +61,12 @@ def load_excel(file, sheet_name: Optional[str] = None) -> pd.DataFrame:
             xls = pd.ExcelFile(file, engine="openpyxl")
         return read_xls(xls, sheet_name)
 
-    # Streamlit UploadedFile
+    # UploadedFile bytes
     file_bytes = file.read()
-    # Try .xlsx first, then .xls
     try:
         xls = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
     except Exception:
         xls = pd.ExcelFile(io.BytesIO(file_bytes), engine="xlrd")
-
     return read_xls(xls, sheet_name)
 
 
@@ -83,18 +81,46 @@ def numericify(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     return df
 
 
-# ---------------------------- Sidebar Controls ----------------------------
-st.sidebar.title("⚙️ Controls")
+def find_date_cols(df: pd.DataFrame) -> List[str]:
+    named = [c for c in df.columns if "date" in str(c).lower()]
+    dtyped = list(df.select_dtypes(include=["datetime64[ns]", "datetime64[ns, UTC]"]).columns)
+    # include columns that look like dates even if stored as object
+    for c in df.columns:
+        if c not in named and c not in dtyped:
+            s = df[c]
+            if s.dtype == object:
+                # quick sniff: if many values parse to dates, consider it a date col
+                try:
+                    parsed = pd.to_datetime(s, errors="coerce")
+                    if parsed.notna().sum() >= max(5, int(0.3 * len(s))):
+                        named.append(c)
+                except Exception:
+                    pass
+    seen, out = set(), []
+    for c in named + dtyped:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
 
+
+def coerce_dates(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+    for c in cols:
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c], errors="coerce")
+    return df
+
+
+# ---------------------------- Sidebar: Upload + Sheet ----------------------------
+st.sidebar.title("📄 File")
 uploaded = st.sidebar.file_uploader("Upload Delivery MasterLog (.xlsx / .xls)", type=["xlsx", "xls"])
 
 if not uploaded:
-    st.sidebar.info("Upload your **Delivery MasterLog in FULAZ.xlsx** file to get started.")
+    st.sidebar.info("Upload your **Delivery MasterLog** Excel file to get started.")
     st.stop()
 
-# Optional: choose sheet
+# Sheet chooser
 try:
-    # Peek sheet names safely
     _peek = pd.ExcelFile(io.BytesIO(uploaded.getvalue()), engine="openpyxl")
     sheet_options = _peek.sheet_names
 except Exception:
@@ -114,54 +140,88 @@ COL_WEIGHT = "Delivered Weight"
 COL_QTY = "Delivered Qty"
 COL_PROGRESS = "Progress %"
 
+# Dates
+date_cols = find_date_cols(data)
+data = coerce_dates(data, date_cols)
+
+# Trucks & numerics
 truck_cols = detect_truck_cols(data)
-numeric_cols_to_cast = [COL_WEIGHT, COL_QTY, COL_PROGRESS] + truck_cols
+numeric_cols_to_cast = [c for c in [COL_WEIGHT, COL_QTY, COL_PROGRESS] if c in data.columns] + truck_cols
 data = numericify(data, numeric_cols_to_cast)
 
-# ---------------------------- KPIs ----------------------------
-total_weight = float(data[COL_WEIGHT].sum(skipna=True)) if COL_WEIGHT in data.columns else np.nan
-total_qty = float(data[COL_QTY].sum(skipna=True)) if COL_QTY in data.columns else np.nan
-avg_progress_pct = float(data[COL_PROGRESS].mean(skipna=True) * 100.0) if COL_PROGRESS in data.columns else np.nan
-
+# ---------------------------- TOP FILTERS (before KPIs) ----------------------------
 st.title("📦 Delivery MasterLog — Dashboard")
-st.caption("Auto-reads your Excel, computes KPIs, and shows trucks & delivery insights. Designed for **FULAZ** log structure.")
+st.caption("Upload → Filter → See KPIs, charts, pivot, and download. Designed for **FULAZ** log structure.")
 
-c1, c2, c3 = st.columns(3)
-c1.metric("Total Delivered Weight (kg)", "N/A" if np.isnan(total_weight) else fmt_num(total_weight, 2))
-c2.metric("Total Delivered Qty", "N/A" if np.isnan(total_qty) else fmt_num(total_qty, 0))
-c3.metric("Average Progress %", "N/A" if np.isnan(avg_progress_pct) else fmt_num(avg_progress_pct, 1) + "%")
+with st.container():
+    st.markdown("### 🔎 Filters")
+
+    # Date filter row
+    cdate1, cdate2, cdate3 = st.columns([1.2, 1.4, 2.5])
+    active_date_col = None
+    if date_cols:
+        active_date_col = cdate1.selectbox("Date column", options=date_cols, index=0)
+        dseries = pd.to_datetime(data[active_date_col], errors="coerce")
+        if dseries.notna().any():
+            min_d, max_d = dseries.min().date(), dseries.max().date()
+            start_d, end_d = cdate2.date_input("From / To", value=(min_d, max_d), min_value=min_d, max_value=max_d)
+            # normalize types & filter
+            mask_date = (dseries.dt.date >= start_d) & (dseries.dt.date <= end_d)
+            data = data[mask_date]
+            # update for later usage
+            dseries = dseries[mask_date]
+            cdate3.write(f"**Range:** {start_d} → {end_d}  \n**Records:** {len(data):,}")
+    else:
+        st.info("No obvious date column found. Continue with other filters.")
+
+    # Categorical filters row
+    cat_cols = []
+    if COL_ZONE in data.columns and data[COL_ZONE].dtype == object:
+        cat_cols.append(COL_ZONE)
+    if COL_ITEM in data.columns and data[COL_ITEM].dtype == object:
+        cat_cols.append(COL_ITEM)
+
+    # Build UI only for available cats
+    selected_filters = {}
+    if cat_cols:
+        fcols = st.columns(len(cat_cols))
+        for i, col in enumerate(cat_cols):
+            vals = ["(All)"] + sorted([v for v in data[col].dropna().astype(str).unique()][:2000])
+            chosen = fcols[i].multiselect(f"{col}", vals, default="(All)")
+            if "(All)" not in chosen:
+                selected_filters[col] = chosen
+
+# Apply categorical filters
+fdata = data.copy()
+for col, sel in selected_filters.items():
+    fdata = fdata[fdata[col].astype(str).isin(sel)]
+
+# ---------------------------- KPIs (on filtered data) ----------------------------
+total_weight = float(fdata[COL_WEIGHT].sum(skipna=True)) if COL_WEIGHT in fdata.columns else np.nan
+total_qty = float(fdata[COL_QTY].sum(skipna=True)) if COL_QTY in fdata.columns else np.nan
+avg_progress_pct = float(fdata[COL_PROGRESS].mean(skipna=True) * 100.0) if COL_PROGRESS in fdata.columns else np.nan
+
+kc1, kc2, kc3 = st.columns(3)
+kc1.metric("Total Delivered Weight (kg)", "N/A" if np.isnan(total_weight) else fmt_num(total_weight, 2))
+kc2.metric("Total Delivered Qty", "N/A" if np.isnan(total_qty) else fmt_num(total_qty, 0))
+kc3.metric("Average Progress %", "N/A" if np.isnan(avg_progress_pct) else fmt_num(avg_progress_pct, 1) + "%")
 
 st.markdown("---")
-
-# ---------------------------- Filters ----------------------------
-# Build filter lists dynamically from likely categorical columns
-cat_candidates = []
-for col in [COL_ZONE, COL_ITEM]:
-    if col in data.columns and data[col].dtype == object:
-        cat_candidates.append(col)
-
-filters = {}
-for col in cat_candidates:
-    vals = ["(All)"] + sorted([v for v in data[col].dropna().astype(str).unique()][:2000])
-    sel = st.multiselect(f"Filter — {col}", vals, default="(All)")
-    if "(All)" not in sel:
-        filters[col] = sel
-
-fdata = data.copy()
-for col, sel in filters.items():
-    fdata = fdata[fdata[col].astype(str).isin(sel)]
 
 # ---------------------------- Charts ----------------------------
 # Chart 1: Top Trucks by Quantity (summing across Truck columns)
 if truck_cols:
     truck_totals = fdata[truck_cols].sum().sort_values(ascending=False)
-    top_n = st.slider("Top N Trucks", min_value=5, max_value=min(30, len(truck_totals)), value=min(15, len(truck_totals)))
-    top_trucks = truck_totals.head(top_n).reset_index()
-    top_trucks.columns = ["Truck", "Qty"]
+    if len(truck_totals) > 0:
+        top_n = st.slider(
+            "Top N Trucks", min_value=5, max_value=max(5, min(30, len(truck_totals))), value=min(15, len(truck_totals))
+        )
+        top_trucks = truck_totals.head(top_n).reset_index()
+        top_trucks.columns = ["Truck", "Qty"]
 
-    fig_trucks = px.bar(top_trucks, x="Truck", y="Qty", title=f"Top {top_n} Trucks by Quantity")
-    fig_trucks.update_layout(margin=dict(l=4, r=4, t=50, b=0), height=360, showlegend=False)
-    st.plotly_chart(fig_trucks, use_container_width=True, config={"displayModeBar": False})
+        fig_trucks = px.bar(top_trucks, x="Truck", y="Qty", title=f"Top {top_n} Trucks by Quantity")
+        fig_trucks.update_layout(margin=dict(l=4, r=4, t=50, b=0), height=360, showlegend=False)
+        st.plotly_chart(fig_trucks, use_container_width=True, config={"displayModeBar": False})
 else:
     st.info("No columns starting with **Truck** were found to build the Top Trucks chart.")
 
@@ -174,9 +234,10 @@ if COL_ZONE in fdata.columns and COL_WEIGHT in fdata.columns:
         .sort_values(COL_WEIGHT, ascending=False)
         .head(15)
     )
-    fig_zone = px.bar(zone_totals, x=COL_ZONE, y=COL_WEIGHT, title="Delivered Weight by Zone / Location (Top 15)")
-    fig_zone.update_layout(margin=dict(l=4, r=4, t=50, b=0), height=360, showlegend=False)
-    st.plotly_chart(fig_zone, use_container_width=True, config={"displayModeBar": False})
+    if not zone_totals.empty:
+        fig_zone = px.bar(zone_totals, x=COL_ZONE, y=COL_WEIGHT, title="Delivered Weight by Zone / Location (Top 15)")
+        fig_zone.update_layout(margin=dict(l=4, r=4, t=50, b=0), height=360, showlegend=False)
+        st.plotly_chart(fig_zone, use_container_width=True, config={"displayModeBar": False})
 
 # Chart 3: Delivered Weight by Item Name
 if COL_ITEM in fdata.columns and COL_WEIGHT in fdata.columns:
@@ -187,18 +248,22 @@ if COL_ITEM in fdata.columns and COL_WEIGHT in fdata.columns:
         .sort_values(COL_WEIGHT, ascending=False)
         .head(15)
     )
-    fig_item = px.bar(item_totals, x=COL_ITEM, y=COL_WEIGHT, title="Delivered Weight by Item Name (Top 15)")
-    fig_item.update_layout(margin=dict(l=4, r=4, t=50, b=0), height=360, showlegend=False)
-    st.plotly_chart(fig_item, use_container_width=True, config={"displayModeBar": False})
+    if not item_totals.empty:
+        fig_item = px.bar(item_totals, x=COL_ITEM, y=COL_WEIGHT, title="Delivered Weight by Item Name (Top 15)")
+        fig_item.update_layout(margin=dict(l=4, r=4, t=50, b=0), height=360, showlegend=False)
+        st.plotly_chart(fig_item, use_container_width=True, config={"displayModeBar": False})
 
 st.markdown("---")
 
-# ---------------------------- Pivot Builder ----------------------------
+# ---------------------------- Pivot Builder (safe) ----------------------------
 st.subheader("Pivot")
+
 # Find additional categorical columns for pivoting (avoid truck columns)
 more_cat_cols = [
     c for c in fdata.columns
-    if c not in truck_cols and fdata[c].dtype == object and fdata[c].nunique(dropna=True) <= 100
+    if c not in truck_cols
+       and (fdata[c].dtype == object or str(fdata[c].dtype).startswith("category"))
+       and fdata[c].nunique(dropna=True) <= 100
 ]
 
 left, right = st.columns([2, 1])
@@ -206,20 +271,52 @@ with left:
     rows = st.multiselect("Rows", options=more_cat_cols, default=([COL_ZONE] if COL_ZONE in more_cat_cols else []))
     cols = st.multiselect("Columns", options=[c for c in more_cat_cols if c not in rows], default=[])
 with right:
-    value_col = st.selectbox("Value", options=[COL_WEIGHT, COL_QTY] + ([COL_PROGRESS] if COL_PROGRESS in fdata.columns else []))
+    value_candidates = [c for c in [COL_WEIGHT, COL_QTY, COL_PROGRESS] if c in fdata.columns]
+    value_col = st.selectbox("Value", options=value_candidates, index=0 if value_candidates else 0)
     aggfunc = st.selectbox("Aggregation", options=["sum", "mean", "count"], index=0)
 
-vals = None if value_col not in fdata.columns else value_col
-if vals and aggfunc in ["sum", "mean"] and pd.api.types.is_numeric_dtype(fdata[vals]):
-    pvt = pd.pivot_table(
-        fdata, index=rows or None, columns=cols or None, values=vals,
-        aggfunc=aggfunc, fill_value=0, dropna=False, observed=False
-    )
+vals = value_col if value_col in fdata.columns else None
+use_numeric = vals is not None and pd.api.types.is_numeric_dtype(fdata[vals])
+
+def _summary_row(df: pd.DataFrame, col: Optional[str], how: str) -> pd.DataFrame:
+    if col and use_numeric:
+        if how == "sum":
+            v = float(df[col].sum(skipna=True))
+            return pd.DataFrame({col: [v]})
+        if how == "mean":
+            v = float(df[col].mean(skipna=True))
+            return pd.DataFrame({col: [v]})
+    # count fallback
+    cnt = int(df[col].count()) if col and col in df.columns else int(len(df))
+    return pd.DataFrame({"count": [cnt]})
+
+if not rows and not cols:
+    # No groupers → show a 1-row summary instead of crashing
+    pvt = _summary_row(fdata, vals, aggfunc)
 else:
-    pvt = pd.pivot_table(
-        fdata, index=rows or None, columns=cols or None, values=vals if vals in fdata.columns else None,
-        aggfunc="count", fill_value=0, dropna=False, observed=False
-    )
+    if aggfunc in ["sum", "mean"] and use_numeric:
+        pvt = pd.pivot_table(
+            fdata,
+            index=rows or None,
+            columns=cols or None,
+            values=vals,
+            aggfunc=aggfunc,
+            fill_value=0,
+            dropna=False,
+            observed=False,
+        )
+    else:
+        pvt = pd.pivot_table(
+            fdata,
+            index=rows or None,
+            columns=cols or None,
+            values=vals if vals in fdata.columns else None,
+            aggfunc="count",
+            fill_value=0,
+            dropna=False,
+            observed=False,
+        )
+
 st.dataframe(pvt, use_container_width=True)
 
 # ---------------------------- Data & Download ----------------------------
@@ -229,4 +326,4 @@ with st.expander("Filtered data (preview)"):
 csv = fdata.to_csv(index=False).encode("utf-8")
 st.download_button("⬇️ Download filtered CSV", data=csv, file_name="filtered_delivery_data.csv", mime="text/csv")
 
-st.caption("Tip: Use the filters above to narrow by Zone/Location or Item. The app sums all **Truck** columns to rank trucks by quantity.")
+st.caption("Tip: Filters at top (including Date From–To) affect KPIs, charts, pivot, and the download.")
