@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
 # FULAZ Delivery MasterLog Dashboard (Streamlit)
-# - Robust .xlsx/.xls handling (no caching of ExcelFile objects)
-# - Header-date filter truly filters & drops other header-date columns
-# - Progress column sanitized (avoids gigantic/negative averages)
-# - Recomputes truck columns after filtering to avoid KeyError
-# - KPIs, analytics tabs, pivot, exports
+# - Loads data automatically from a fixed Google Sheets XLSX URL (no manual upload)
+# - Hides the "DATE COLUMN" selector UI
+# - (All other behavior unchanged from previous fixed version)
 
 import io
 from typing import List, Optional, Tuple
 from datetime import datetime
+from urllib.request import urlopen, Request
 
 import numpy as np
 import pandas as pd
@@ -16,6 +15,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
+
+# ---------------------------- DATA SOURCE (fixed URL) ----------------------------
+DATA_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSViQnyD-_j5cQLYpVxG3CBHie-w62pLnQS3tD12bz3XsKTBmmDnwHuO6EgwK2gMA/pub?output=xlsx"
 
 # ---------------------------- Page Config ----------------------------
 st.set_page_config(
@@ -116,15 +118,27 @@ def _header_idx_to_colnames(df: pd.DataFrame, header_dates: List[tuple], selecte
     chosen_idxs = [idx for idx, d in header_dates if d.strftime("%Y-%m-%d") in selected_dates_str]
     return [df.columns[i] for i in chosen_idxs if 0 <= i < len(df.columns)]
 
-# ---------------------------- Cache-safe upload bytes ----------------------------
+# ---------------------------- Cache-safe bytes fetch ----------------------------
 @st.cache_data(show_spinner=False)
-def _get_upload_bytes(uploaded_file) -> Tuple[bytes, str]:
-    """Return (file_bytes, filename) — both pickle-serializable."""
-    if hasattr(uploaded_file, "getvalue"):
-        return uploaded_file.getvalue(), getattr(uploaded_file, "name", "") or ""
-    return uploaded_file.read(), getattr(uploaded_file, "name", "") or ""
+def _get_upload_bytes(uploaded_file_or_url) -> Tuple[bytes, str]:
+    """
+    Returns (file_bytes, filename). Accepts a URL string (http/https) or a file-like.
+    """
+    # URL string case
+    if isinstance(uploaded_file_or_url, str) and uploaded_file_or_url.lower().startswith(("http://", "https://")):
+        req = Request(uploaded_file_or_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(req) as resp:
+            content = resp.read()
+        # name hint
+        return content, "source.xlsx"
 
-# ---------------------------- Excel helpers (do NOT cache ExcelFile) ----------------------------
+    # Streamlit UploadedFile-like
+    if hasattr(uploaded_file_or_url, "getvalue"):
+        return uploaded_file_or_url.getvalue(), getattr(uploaded_file_or_url, "name", "") or ""
+    # Fallback read()
+    return uploaded_file_or_url.read(), getattr(uploaded_file_or_url, "name", "") or ""
+
+# ---------------------------- Excel helpers ----------------------------
 def _open_excel_from_bytes(file_bytes: bytes, filename: str) -> pd.ExcelFile:
     """Create a pd.ExcelFile from bytes with the correct engine (.xls -> xlrd, .xlsx -> openpyxl)."""
     is_xls = filename.lower().endswith(".xls")
@@ -132,9 +146,9 @@ def _open_excel_from_bytes(file_bytes: bytes, filename: str) -> pd.ExcelFile:
     return pd.ExcelFile(io.BytesIO(file_bytes), engine=engine)
 
 @st.cache_data(show_spinner=False)
-def load_excel(uploaded_file, sheet_name: Optional[str] = None) -> pd.DataFrame:
+def load_excel(uploaded_file_or_url, sheet_name: Optional[str] = None) -> pd.DataFrame:
     """Load Excel into a DataFrame with header-row auto-detect (returns DF so caching is safe)."""
-    file_bytes, filename = _get_upload_bytes(uploaded_file)
+    file_bytes, filename = _get_upload_bytes(uploaded_file_or_url)
     xobj = _open_excel_from_bytes(file_bytes, filename)
 
     def read_sheet(xobj: pd.ExcelFile, sheet_nm: Optional[str]) -> pd.DataFrame:
@@ -154,10 +168,10 @@ def load_excel(uploaded_file, sheet_name: Optional[str] = None) -> pd.DataFrame:
 
     return read_sheet(xobj, sheet_name)
 
-def extract_header_dates(uploaded_file, sheet_name: Optional[str] = None) -> List[tuple]:
+def extract_header_dates(uploaded_file_or_url, sheet_name: Optional[str] = None) -> List[tuple]:
     """Extract date-like cells from first row only; returns list[(col_index, python_date)]."""
     try:
-        file_bytes, filename = _get_upload_bytes(uploaded_file)
+        file_bytes, filename = _get_upload_bytes(uploaded_file_or_url)
         xobj = _open_excel_from_bytes(file_bytes, filename)
         target = sheet_name or xobj.sheet_names[0]
         first = xobj.parse(target, header=None, nrows=1).iloc[0].tolist()
@@ -256,25 +270,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------------------- Sidebar upload ----------------------------
-st.sidebar.markdown("### 📄 FILE UPLOAD")
-uploaded = st.sidebar.file_uploader("UPLOAD FULAZ DELIVERY MASTERLOG", type=["xlsx", "xls"])
+# ---------------------------- Sidebar (no upload; show source info) ----------------------------
+st.sidebar.markdown("### 📄 DATA SOURCE")
+st.sidebar.write("Loading automatically from:")
+st.sidebar.code(DATA_URL, language="text")
 
-if not uploaded:
-    st.markdown('<div class="main-header">🏗️ FULAZ DELIVERY MASTERLOG DASHBOARD</div>', unsafe_allow_html=True)
-    st.info("👈 PLEASE UPLOAD YOUR **FULAZ DELIVERY MASTERLOG** EXCEL FILE TO GET STARTED.")
-    st.markdown("""
-    ### EXPECTED FILE STRUCTURE:
-    - **CUSTOMER NAME**, **PROJECT NAME**, **ZONE/LOCATION**
-    - **ITEM NAME**, **DELIVERED WEIGHT**, **DELIVERED QTY**
-    - **PROGRESS %**, **TRUCK COLUMNS** (TRUCK1, TRUCK2, ...)
-    - **DATE COLUMNS** (AUTOMATICALLY DETECTED)
-    """)
-    st.stop()
-
-# Peek sheet names
+# ---------------------------- Peek sheet names from URL ----------------------------
 try:
-    _bytes, _name = _get_upload_bytes(uploaded)
+    _bytes, _name = _get_upload_bytes(DATA_URL)
     _peek = _open_excel_from_bytes(_bytes, _name)
     sheet_options = _peek.sheet_names
 except Exception:
@@ -283,11 +286,10 @@ sheet_name = st.sidebar.selectbox("📋 SELECT SHEET", options=sheet_options, in
 
 # ---------------------------- Load & Prepare Data ----------------------------
 with st.spinner("LOADING AND PROCESSING DATA..."):
-    header_dates = extract_header_dates(uploaded, sheet_name=sheet_name)
-    data = load_excel(uploaded, sheet_name=sheet_name)
+    header_dates = extract_header_dates(DATA_URL, sheet_name=sheet_name)
+    data = load_excel(DATA_URL, sheet_name=sheet_name)
     if data.empty:
-        st.error("❌ FAILED TO LOAD DATA FROM EXCEL FILE")
-        st.info("Please check that your file is a valid Excel (.xlsx or .xls) and try again.")
+        st.error("❌ FAILED TO LOAD DATA FROM THE PROVIDED URL")
         st.stop()
     data.columns = [c.strip().upper() for c in data.columns]
 
@@ -320,7 +322,7 @@ numeric_cols_to_cast = [
 ] + truck_cols
 data = numericify(data, numeric_cols_to_cast)
 
-# --- Progress cleaning (REPLACES old normalization block) ---
+# --- Progress cleaning ---
 if COL_PROGRESS in data.columns:
     data[COL_PROGRESS] = clean_progress_col(data, COL_PROGRESS)
 
@@ -331,14 +333,14 @@ st.markdown('<div class="main-header">🏗️ FULAZ DELIVERY MASTERLOG DASHBOARD
 st.markdown('<div class="filter-container">', unsafe_allow_html=True)
 st.markdown('<div class="filter-header">🔍 COMPREHENSIVE FILTERS</div>', unsafe_allow_html=True)
 
-active_date_col = None  # safety init
+active_date_col = None  # will stay hidden / unused
 
 # Row 1: Date filters
 st.markdown("#### 📅 DATE RANGE FILTERS")
 date_col1, date_col2, date_col3, date_col4 = st.columns(4)
 
 with date_col1:
-    # --- HEADER DATE FILTER (now actually filters the data & drops other header-date columns) ---
+    # --- HEADER DATE FILTER (filters & drops other header-date columns) ---
     if header_dates:
         st.markdown("**HEADER DATES AVAILABLE**")
         header_date_options = [d.strftime("%Y-%m-%d") for _i, d in header_dates]
@@ -362,23 +364,9 @@ with date_col1:
             else:
                 st.warning("No matching header-date columns found for your selection.")
 
-with date_col2:
-    # --- COLUMN DATE FILTER (standard date column within the data) ---
-    if date_cols:
-        active_date_col = st.selectbox("📅 DATE COLUMN", options=["NONE"] + date_cols, index=0)
-
-with date_col3, date_col4:
-    if date_cols and active_date_col and active_date_col != "NONE":
-        dseries = pd.to_datetime(data[active_date_col], errors="coerce")
-        valid = dseries.dropna()
-        if len(valid) > 0:
-            min_d, max_d = valid.min().date(), valid.max().date()
-            start_date = st.date_input("START DATE", value=min_d, min_value=min_d, max_value=max_d, key="start_date_input")
-            end_date = st.date_input("END DATE", value=max_d, min_value=min_d, max_value=max_d, key="end_date_input")
-            if start_date and end_date:
-                mask = (dseries.dt.date >= start_date) & (dseries.dt.date <= end_date)
-                data = data[mask].copy()
-                st.success(f"DATE FILTERED: {start_date} TO {end_date}")
+# with date_col2:  (HIDDEN: DATE COLUMN selector removed per request)
+# We intentionally do not render the "📅 DATE COLUMN" selectbox.
+# Keep the placeholders to preserve layout (empty col2/col3/col4 when header filter not used).
 
 # Row 2: Business filters
 st.markdown("#### 🏢 BUSINESS DIMENSION FILTERS")
@@ -412,7 +400,7 @@ with filter_col4:
         if "ALL" not in selected_items:
             data = data[data[COL_ITEM].astype(str).isin(selected_items)]
 
-# IMPORTANT: recompute current truck columns AFTER filters & column drops
+# IMPORTANT: recompute current truck columns AFTER potential column drops
 truck_cols_current = [c for c in detect_truck_cols(data) if c in data.columns]
 
 unique_customers = len(data[COL_CUSTOMER].unique()) if COL_CUSTOMER in data.columns else 0
@@ -430,11 +418,14 @@ st.markdown('</div>', unsafe_allow_html=True)
 # ---------------------------- KPIs ----------------------------
 st.markdown('<div class="section-header">📈 KEY PERFORMANCE INDICATORS</div>', unsafe_allow_html=True)
 
+COL_WEIGHT = "DELIVERED WEIGHT"
+COL_QTY = "DELIVERED QTY"
+
 total_delivered_weight = float(data[COL_WEIGHT].sum(skipna=True)) if COL_WEIGHT in data.columns else 0.0
 total_delivered_qty = float(data[COL_QTY].sum(skipna=True)) if COL_QTY in data.columns else 0.0
-total_contracted_weight = float(data[COL_CONTRACTED_WEIGHT].sum(skipna=True)) if COL_CONTRACTED_WEIGHT in data.columns else 0.0
-total_contracted_qty = float(data[COL_CONTRACTED_QTY].sum(skipna=True)) if COL_CONTRACTED_QTY in data.columns else 0.0
-avg_progress = float(data[COL_PROGRESS].mean(skipna=True) * 100) if COL_PROGRESS in data.columns else 0.0
+total_contracted_weight = float(data.get("CONTRACTED WEIGHT", pd.Series(dtype=float)).sum(skipna=True)) if "CONTRACTED WEIGHT" in data.columns else 0.0
+total_contracted_qty = float(data.get("CONTRACTED QTY", pd.Series(dtype=float)).sum(skipna=True)) if "CONTRACTED QTY" in data.columns else 0.0
+avg_progress = float(data["PROGRESS %"].mean(skipna=True) * 100) if "PROGRESS %" in data.columns else 0.0
 
 weight_completion = (total_delivered_weight / total_contracted_weight * 100) if total_contracted_weight > 0 else 0.0
 qty_completion = (total_delivered_qty / total_contracted_qty * 100) if total_contracted_qty > 0 else 0.0
@@ -504,7 +495,7 @@ with kpi_col7:
     </div>
     """, unsafe_allow_html=True)
 with kpi_col8:
-    unique_items = len(data[COL_ITEM].unique()) if COL_ITEM in data.columns else 0
+    unique_items = len(data["ITEM NAME"].unique()) if "ITEM NAME" in data.columns else 0
     st.markdown(f"""
     <div class="metric-card">
         <div class="metric-title">🔧 ITEM TYPES</div>
@@ -515,9 +506,9 @@ with kpi_col8:
 
 efficiency_col1, efficiency_col2, efficiency_col3, efficiency_col4 = st.columns(4)
 avg_weight_per_delivery = (total_delivered_weight / len(data)) if len(data) > 0 else 0.0
-total_balance_weight = float(data[COL_BALANCE_WEIGHT].sum(skipna=True)) if COL_BALANCE_WEIGHT in data.columns else 0.0
+total_balance_weight = float(data.get("BALANCE WEIGHT", pd.Series(dtype=float)).sum(skipna=True)) if "BALANCE WEIGHT" in data.columns else 0.0
 avg_truck_load = (total_delivered_qty / active_trucks) if active_trucks > 0 else 0.0
-completion_projects = len(data[data[COL_PROGRESS] >= 0.95]) if COL_PROGRESS in data.columns else 0
+completion_projects = len(data[data["PROGRESS %"] >= 0.95]) if "PROGRESS %" in data.columns else 0
 
 with efficiency_col1:
     st.markdown(f"""
@@ -615,25 +606,25 @@ with tab1:
 
 with tab2:
     st.subheader("ZONE PERFORMANCE ANALYSIS")
-    if COL_ZONE in data.columns and COL_WEIGHT in data.columns:
-        zone_analysis = data.groupby(COL_ZONE, dropna=False).agg({
-            COL_WEIGHT: 'sum',
-            COL_QTY: 'sum',
-            COL_PROGRESS: 'mean',
-            COL_CUSTOMER: 'nunique'
+    if "ZONE / LOCATION" in data.columns and "DELIVERED WEIGHT" in data.columns:
+        zone_analysis = data.groupby("ZONE / LOCATION", dropna=False).agg({
+            "DELIVERED WEIGHT": 'sum',
+            "DELIVERED QTY": 'sum',
+            "PROGRESS %": 'mean',
+            "CUSTOMER NAME": 'nunique'
         }).round(2)
         zone_analysis.columns = ['TOTAL_WEIGHT', 'TOTAL_QTY', 'AVG_PROGRESS', 'UNIQUE_CUSTOMERS']
         zone_analysis = zone_analysis.sort_values('TOTAL_WEIGHT', ascending=False)
 
         col1, col2 = st.columns(2)
         with col1:
-            fig_zone_weight = px.bar(zone_analysis.reset_index(), x=COL_ZONE, y='TOTAL_WEIGHT',
+            fig_zone_weight = px.bar(zone_analysis.reset_index(), x="ZONE / LOCATION", y='TOTAL_WEIGHT',
                                      title="TOTAL DELIVERED WEIGHT BY ZONE",
                                      color='TOTAL_WEIGHT', color_continuous_scale="blues")
             fig_zone_weight.update_layout(height=400, title_font_size=16, title_font_color="#1f77b4")
             st.plotly_chart(fig_zone_weight, use_container_width=True)
         with col2:
-            fig_zone_progress = px.bar(zone_analysis.reset_index(), x=COL_ZONE, y='AVG_PROGRESS',
+            fig_zone_progress = px.bar(zone_analysis.reset_index(), x="ZONE / LOCATION", y='AVG_PROGRESS',
                                        title="AVERAGE PROGRESS BY ZONE",
                                        color='AVG_PROGRESS', color_continuous_scale="greens")
             fig_zone_progress.update_layout(height=400, title_font_size=16, title_font_color="#1f77b4")
@@ -650,13 +641,13 @@ with tab2:
 
 with tab3:
     st.subheader("PROJECT PROGRESS TRACKING")
-    if COL_PROJECT in data.columns and COL_PROGRESS in data.columns:
-        project_progress = data.groupby(COL_PROJECT, dropna=False).agg({
-            COL_PROGRESS: 'mean',
-            COL_WEIGHT: 'sum',
-            COL_QTY: 'sum',
-            COL_CUSTOMER: 'first',
-            COL_ZONE: lambda x: ', '.join(pd.Series(x).astype(str).unique())
+    if "PROJECT NAME" in data.columns and "PROGRESS %" in data.columns:
+        project_progress = data.groupby("PROJECT NAME", dropna=False).agg({
+            "PROGRESS %": 'mean',
+            "DELIVERED WEIGHT": 'sum',
+            "DELIVERED QTY": 'sum',
+            "CUSTOMER NAME": 'first',
+            "ZONE / LOCATION": lambda x: ', '.join(pd.Series(x).astype(str).unique())
         }).round(3)
         project_progress.columns = ['AVG_PROGRESS', 'TOTAL_WEIGHT', 'TOTAL_QTY', 'CUSTOMER', 'ZONES']
         project_progress = project_progress.sort_values('AVG_PROGRESS', ascending=True)
@@ -664,7 +655,7 @@ with tab3:
         col1, col2 = st.columns(2)
         with col1:
             fig_project = px.bar(project_progress.reset_index().head(15),
-                                 x='AVG_PROGRESS', y=COL_PROJECT, orientation='h',
+                                 x='AVG_PROGRESS', y="PROJECT NAME", orientation='h',
                                  title="PROJECT PROGRESS STATUS (BOTTOM 15)",
                                  color='AVG_PROGRESS', color_continuous_scale="reds")
             fig_project.update_layout(height=500, title_font_size=16, title_font_color="#1f77b4")
@@ -690,62 +681,17 @@ with tab3:
 
 with tab4:
     st.subheader("DELIVERY TRENDS OVER TIME")
-    if date_cols and active_date_col and active_date_col != "NONE":
-        data_with_dates = data.dropna(subset=[active_date_col]).copy()
-        data_with_dates['DATE'] = pd.to_datetime(data_with_dates[active_date_col])
-        if len(data_with_dates) > 0:
-            daily_stats = data_with_dates.groupby(data_with_dates['DATE'].dt.date).agg({
-                COL_WEIGHT: 'sum',
-                COL_QTY: 'sum'
-            }).reset_index()
-            daily_stats.columns = ['DATE', 'DAILY_WEIGHT', 'DAILY_QTY']
-
-            col1, col2 = st.columns(2)
-            with col1:
-                fig_weight_trend = px.line(daily_stats, x='DATE', y='DAILY_WEIGHT',
-                                           title="DAILY DELIVERED WEIGHT TREND", markers=True)
-                fig_weight_trend.update_layout(height=400, title_font_size=16, title_font_color="#1f77b4")
-                st.plotly_chart(fig_weight_trend, use_container_width=True)
-            with col2:
-                fig_qty_trend = px.line(daily_stats, x='DATE', y='DAILY_QTY',
-                                        title="DAILY DELIVERED QUANTITY TREND", markers=True)
-                fig_qty_trend.update_layout(height=400, title_font_size=16, title_font_color="#1f77b4")
-                st.plotly_chart(fig_qty_trend, use_container_width=True)
-
-            daily_stats['CUMULATIVE_WEIGHT'] = daily_stats['DAILY_WEIGHT'].cumsum()
-            daily_stats['CUMULATIVE_QTY'] = daily_stats['DAILY_QTY'].cumsum()
-
-            fig_cumulative = make_subplots(
-                rows=2, cols=1,
-                subplot_titles=('CUMULATIVE WEIGHT DELIVERED', 'CUMULATIVE QUANTITY DELIVERED'),
-                vertical_spacing=0.1
-            )
-            fig_cumulative.add_trace(
-                go.Scatter(x=daily_stats['DATE'], y=daily_stats['CUMULATIVE_WEIGHT'],
-                           mode='lines+markers', name='WEIGHT (KG)'),
-                row=1, col=1
-            )
-            fig_cumulative.add_trace(
-                go.Scatter(x=daily_stats['DATE'], y=daily_stats['CUMULATIVE_QTY'],
-                           mode='lines+markers', name='QUANTITY'),
-                row=2, col=1
-            )
-            fig_cumulative.update_layout(height=600, title_text="CUMULATIVE DELIVERY PROGRESS",
-                                         title_font_size=18, title_font_color="#1f77b4")
-            st.plotly_chart(fig_cumulative, use_container_width=True)
-        else:
-            st.info("No valid dates found in the selected date column after filtering.")
-    else:
-        st.info("NO DATE COLUMNS FOUND FOR TREND ANALYSIS. PLEASE SELECT A DATE COLUMN IN THE FILTERS SECTION.")
+    # DATE COLUMN selector is hidden; therefore we show an info hint here
+    st.info("DATE COLUMN selection is disabled. Use the HEADER DATES filter above to focus the dataset.")
 
 with tab5:
     st.subheader("ITEM ANALYSIS")
-    if COL_ITEM in data.columns:
-        item_analysis = data.groupby(COL_ITEM, dropna=False).agg({
-            COL_WEIGHT: 'sum',
-            COL_QTY: 'sum',
-            COL_PROGRESS: 'mean',
-            COL_PROJECT: 'nunique'
+    if "ITEM NAME" in data.columns:
+        item_analysis = data.groupby("ITEM NAME", dropna=False).agg({
+            "DELIVERED WEIGHT": 'sum',
+            "DELIVERED QTY": 'sum',
+            "PROGRESS %": 'mean',
+            "PROJECT NAME": 'nunique'
         }).round(2)
         item_analysis.columns = ['TOTAL_WEIGHT', 'TOTAL_QTY', 'AVG_PROGRESS', 'PROJECT_COUNT']
         item_analysis = item_analysis.sort_values('TOTAL_WEIGHT', ascending=False)
@@ -753,7 +699,7 @@ with tab5:
         col1, col2 = st.columns(2)
         with col1:
             fig_items = px.bar(item_analysis.head(15).reset_index(),
-                               x=COL_ITEM, y='TOTAL_WEIGHT',
+                               x="ITEM NAME", y='TOTAL_WEIGHT',
                                title="TOP 15 ITEMS BY WEIGHT DELIVERED",
                                color='TOTAL_WEIGHT', color_continuous_scale="viridis")
             fig_items.update_xaxes(tickangle=45)
@@ -762,7 +708,7 @@ with tab5:
         with col2:
             fig_item_progress = px.scatter(item_analysis.reset_index(),
                                            x='TOTAL_WEIGHT', y='AVG_PROGRESS',
-                                           size='TOTAL_QTY', hover_name=COL_ITEM,
+                                           size='TOTAL_QTY', hover_name="ITEM NAME",
                                            title="ITEM WEIGHT VS PROGRESS (BUBBLE SIZE = QUANTITY)",
                                            color='PROJECT_COUNT', color_continuous_scale="plasma")
             fig_item_progress.update_layout(height=500, title_font_size=16, title_font_color="#1f77b4")
@@ -784,13 +730,13 @@ st.markdown('<div class="section-header">🔄 ADVANCED PIVOT ANALYSIS</div>', un
 
 pivot_col1, pivot_col2, pivot_col3, pivot_col4 = st.columns(4)
 with pivot_col1:
-    available_dims = [c for c in [COL_CUSTOMER, COL_PROJECT, COL_ZONE, COL_ITEM] if c in data.columns]
-    pivot_rows = st.multiselect("📊 ROWS (GROUP BY)", available_dims, default=[COL_ZONE] if COL_ZONE in available_dims else [])
+    available_dims = [c for c in ["CUSTOMER NAME", "PROJECT NAME", "ZONE / LOCATION", "ITEM NAME"] if c in data.columns]
+    pivot_rows = st.multiselect("📊 ROWS (GROUP BY)", available_dims, default=["ZONE / LOCATION"] if "ZONE / LOCATION" in available_dims else [])
 with pivot_col2:
     remaining_dims = [c for c in available_dims if c not in pivot_rows]
     pivot_cols = st.multiselect("📈 COLUMNS", remaining_dims, default=[])
 with pivot_col3:
-    value_options = [c for c in [COL_WEIGHT, COL_QTY, COL_PROGRESS] if c in data.columns]
+    value_options = [c for c in ["DELIVERED WEIGHT", "DELIVERED QTY", "PROGRESS %"] if c in data.columns]
     pivot_value = st.selectbox("📋 VALUES", value_options if value_options else [""], index=0)
 with pivot_col4:
     pivot_agg = st.selectbox("🔢 AGGREGATION", ['SUM', 'MEAN', 'COUNT', 'MIN', 'MAX'], index=0)
@@ -818,9 +764,9 @@ if pivot_rows or pivot_cols:
             )
 
         st.subheader("PIVOT TABLE RESULTS")
-        if pivot_value in [COL_WEIGHT, COL_QTY]:
+        if pivot_value in ["DELIVERED WEIGHT", "DELIVERED QTY"]:
             formatted_pivot = pivot_table.style.format('{:,.2f}')
-        elif pivot_value == COL_PROGRESS:
+        elif pivot_value == "PROGRESS %":
             formatted_pivot = pivot_table.style.format('{:.2%}')
         else:
             formatted_pivot = pivot_table.style.format('{:,.0f}')
@@ -835,7 +781,7 @@ if pivot_rows or pivot_cols:
             key="pivot_download"
         )
     except Exception as e:
-        st.error(f"ERROR CREATING PIVOT TABLE: {str(e)}")
+        st.error(f"ERROR CREATING PIVOT TABLE: {e}")
 else:
     st.info("SELECT ROWS OR COLUMNS TO CREATE A PIVOT TABLE")
 
@@ -916,13 +862,13 @@ with export_col3:
         )
 
 with export_col4:
-    if COL_ZONE in data.columns and st.button("🗺️ EXPORT ZONE DATA", key="zone_btn"):
-        zone_export = data.groupby(COL_ZONE, dropna=False).agg({
-            COL_WEIGHT: ['sum', 'mean'],
-            COL_QTY: ['sum', 'mean'],
-            COL_PROGRESS: 'mean',
-            COL_CUSTOMER: 'nunique',
-            COL_PROJECT: 'nunique'
+    if "ZONE / LOCATION" in data.columns and st.button("🗺️ EXPORT ZONE DATA", key="zone_btn"):
+        zone_export = data.groupby("ZONE / LOCATION", dropna=False).agg({
+            "DELIVERED WEIGHT": ['sum', 'mean'],
+            "DELIVERED QTY": ['sum', 'mean'],
+            "PROGRESS %": 'mean',
+            "CUSTOMER NAME": 'nunique',
+            "PROJECT NAME": 'nunique'
         }).round(2)
         zone_export.columns = ['TOTAL_WEIGHT', 'AVG_WEIGHT', 'TOTAL_QTY', 'AVG_QTY', 'AVG_PROGRESS', 'CUSTOMERS', 'PROJECTS']
         zone_csv = zone_export.to_csv()
