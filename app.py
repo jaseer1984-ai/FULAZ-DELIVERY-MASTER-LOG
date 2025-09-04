@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 # FULAZ Delivery MasterLog Dashboard (Streamlit)
 # - Robust .xlsx/.xls handling (no caching of ExcelFile objects)
-# - Header-date filter now truly filters and drops other header-date columns
+# - Header-date filter truly filters & drops other header-date columns
 # - Progress column sanitized (avoids gigantic/negative averages)
+# - Recomputes truck columns after filtering to avoid KeyError
 # - KPIs, analytics tabs, pivot, exports
 
 import io
@@ -309,7 +310,9 @@ COL_BALANCE_QTY = "BALANCE QTY"
 date_cols = find_date_cols(data)
 data = coerce_dates(data, date_cols)
 
+# initial truck columns (pre-filters)
 truck_cols = detect_truck_cols(data)
+
 numeric_cols_to_cast = [
     c for c in [COL_WEIGHT, COL_QTY, COL_PROGRESS, COL_CONTRACTED_WEIGHT,
                 COL_CONTRACTED_QTY, COL_BALANCE_WEIGHT, COL_BALANCE_QTY]
@@ -409,6 +412,9 @@ with filter_col4:
         if "ALL" not in selected_items:
             data = data[data[COL_ITEM].astype(str).isin(selected_items)]
 
+# IMPORTANT: recompute current truck columns AFTER filters & column drops
+truck_cols_current = [c for c in detect_truck_cols(data) if c in data.columns]
+
 unique_customers = len(data[COL_CUSTOMER].unique()) if COL_CUSTOMER in data.columns else 0
 unique_zones = len(data[COL_ZONE].unique()) if COL_ZONE in data.columns else 0
 unique_projects = len(data[COL_PROJECT].unique()) if COL_PROJECT in data.columns else 0
@@ -434,8 +440,8 @@ weight_completion = (total_delivered_weight / total_contracted_weight * 100) if 
 qty_completion = (total_delivered_qty / total_contracted_qty * 100) if total_contracted_qty > 0 else 0.0
 
 active_trucks = 0
-if truck_cols:
-    truck_data = data[truck_cols].fillna(0)
+if truck_cols_current:
+    truck_data = data[truck_cols_current].fillna(0)
     active_trucks = (truck_data > 0).any().sum()
 
 kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
@@ -468,7 +474,7 @@ with kpi_col4:
     <div class="metric-card">
         <div class="metric-title">🚛 ACTIVE TRUCKS</div>
         <div class="metric-value">{active_trucks}</div>
-        <div class="metric-delta">OUT OF {len(truck_cols)} TOTAL</div>
+        <div class="metric-delta">OUT OF {len(truck_cols_current)} TOTAL</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -554,9 +560,9 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["🚛 TRUCK ANALYSIS", "🗺️ ZONE PER
 
 with tab1:
     st.subheader("TRUCK UTILIZATION ANALYSIS")
-    if truck_cols:
-        truck_data = data[truck_cols].fillna(0)
-        truck_totals = truck_data.sum().sort_values(ascending=False)
+    if truck_cols_current:
+        tdf = data[truck_cols_current].fillna(0)
+        truck_totals = tdf.sum().sort_values(ascending=False)
         truck_utilization = truck_totals[truck_totals > 0]
 
         col1, col2 = st.columns(2)
@@ -597,13 +603,15 @@ with tab1:
             </div>
             """, unsafe_allow_html=True)
         with col5:
-            utilization_rate = (len(truck_utilization) / len(truck_cols) * 100) if len(truck_cols) > 0 else 0
+            utilization_rate = (len(truck_utilization) / len(truck_cols_current) * 100) if len(truck_cols_current) > 0 else 0
             st.markdown(f"""
             <div class="metric-card">
                 <div class="metric-title">📈 UTILIZATION RATE</div>
                 <div class="metric-value">{utilization_rate:.1f}%</div>
             </div>
             """, unsafe_allow_html=True)
+    else:
+        st.info("No TRUCK* columns available after filtering.")
 
 with tab2:
     st.subheader("ZONE PERFORMANCE ANALYSIS")
@@ -674,7 +682,7 @@ with tab3:
         st.subheader("PROJECT DETAILS")
         project_progress['AVG_PROGRESS'] = project_progress['AVG_PROGRESS'] * 100
         styled_project_df = project_progress.style.format({
-            'AVG_PROGRESS': '{:.1}%',
+            'AVG_PROGRESS': '{:.1f}%',
             'TOTAL_WEIGHT': '{:,.2f}',
             'TOTAL_QTY': '{:,.0f}'
         })
@@ -889,13 +897,13 @@ with export_col2:
         )
 
 with export_col3:
-    if 'truck_cols' in locals() and truck_cols and st.button("🚛 EXPORT TRUCK DATA", key="truck_btn"):
-        tdata = data[truck_cols].fillna(0)
+    if truck_cols_current and st.button("🚛 EXPORT TRUCK DATA", key="truck_btn"):
+        tdata = data[truck_cols_current].fillna(0)
         truck_summary = pd.DataFrame({
-            'TRUCK': truck_cols,
-            'TOTAL_DELIVERIES': [tdata[col].sum() for col in truck_cols],
-            'ACTIVE_DAYS': [(tdata[col] > 0).sum() for col in truck_cols],
-            'UTILIZATION_RATE': [(tdata[col] > 0).mean() * 100 for col in truck_cols]
+            'TRUCK': truck_cols_current,
+            'TOTAL_DELIVERIES': [tdata[col].sum() for col in truck_cols_current],
+            'ACTIVE_DAYS': [(tdata[col] > 0).sum() for col in truck_cols_current],
+            'UTILIZATION_RATE': [(tdata[col] > 0).mean() * 100 for col in truck_cols_current]
         })
         truck_summary = truck_summary.sort_values('TOTAL_DELIVERIES', ascending=False)
         truck_csv = truck_summary.to_csv(index=False)
