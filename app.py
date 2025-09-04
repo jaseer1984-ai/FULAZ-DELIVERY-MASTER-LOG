@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
-# Enhanced Excel → Streamlit Dashboard for FULAZ Delivery MasterLog
-# - Robust .xlsx/.xls handling without caching unserializable objects
-# - Date filters extracted from first row (header dates)
-# - ALL CAPS formatting for professional report presentation
-# - Top-positioned comprehensive filter section
-# - Enhanced metric cards and analytics tabs
-# Author: AI Assistant | Enhanced for FULAZ Professional Dashboard
+# FULAZ Delivery MasterLog Dashboard (Streamlit)
+# - Robust .xlsx/.xls handling (no caching of ExcelFile objects)
+# - Header-date filter now truly filters and drops other header-date columns
+# - Progress column sanitized (avoids gigantic/negative averages)
+# - KPIs, analytics tabs, pivot, exports
 
 import io
 from typing import List, Optional, Tuple
@@ -18,7 +16,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-# ---------------------------- Config ----------------------------
+# ---------------------------- Page Config ----------------------------
 st.set_page_config(
     page_title="FULAZ DELIVERY MASTERLOG DASHBOARD",
     layout="wide",
@@ -26,7 +24,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ---------------------------- Small formatters ----------------------------
+# ---------------------------- Small helpers ----------------------------
 def fmt_num(x, dec=2):
     try:
         return f"{float(x):,.{dec}f}".upper()
@@ -39,78 +37,6 @@ def fmt_pct(x):
     except Exception:
         return "--"
 
-# ---------------------------- Cache-safe upload bytes ----------------------------
-@st.cache_data(show_spinner=False)
-def _get_upload_bytes(uploaded_file) -> Tuple[bytes, str]:
-    """
-    Return (file_bytes, filename). This is pickle-serializable and safe for st.cache_data.
-    """
-    if hasattr(uploaded_file, "getvalue"):
-        return uploaded_file.getvalue(), getattr(uploaded_file, "name", "") or ""
-    # Fallback for file-like
-    return uploaded_file.read(), getattr(uploaded_file, "name", "") or ""
-
-# ---------------------------- Excel helpers (no caching of ExcelFile) ----------------------------
-def _open_excel_from_bytes(file_bytes: bytes, filename: str) -> pd.ExcelFile:
-    """
-    Create a pd.ExcelFile from bytes using correct engine.
-    Not cached because ExcelFile isn't pickle-serializable.
-    """
-    is_xls = filename.lower().endswith(".xls")
-    engine = "xlrd" if is_xls else "openpyxl"
-    return pd.ExcelFile(io.BytesIO(file_bytes), engine=engine)
-
-@st.cache_data(show_spinner=False)
-def load_excel(uploaded_file, sheet_name: Optional[str] = None) -> pd.DataFrame:
-    """
-    Load Excel into a DataFrame with header-row auto-detect.
-    Returns a DataFrame (pickle-serializable) so caching is safe.
-    """
-    file_bytes, filename = _get_upload_bytes(uploaded_file)
-    xobj = _open_excel_from_bytes(file_bytes, filename)
-
-    def read_sheet(xobj: pd.ExcelFile, sheet_nm: Optional[str]) -> pd.DataFrame:
-        target = sheet_nm or xobj.sheet_names[0]
-        # Try header at Excel rows 3,2,1
-        for hdr in (2, 1, 0):
-            try:
-                df_try = xobj.parse(target, header=hdr)
-                df_try.columns = [str(c).strip().upper() for c in df_try.columns]
-                good_cols = sum(not str(c).lower().startswith("unnamed") for c in df_try.columns)
-                if good_cols >= 5:
-                    return df_try
-            except Exception:
-                pass
-        # Fallback
-        df = xobj.parse(target)
-        df.columns = [str(c).strip().upper() for c in df.columns]
-        return df
-
-    return read_sheet(xobj, sheet_name)
-
-def extract_header_dates(uploaded_file, sheet_name: Optional[str] = None) -> List[tuple]:
-    """
-    Extract dates from first row only. Builds ExcelFile locally (not cached) from cached bytes.
-    """
-    try:
-        file_bytes, filename = _get_upload_bytes(uploaded_file)
-        xobj = _open_excel_from_bytes(file_bytes, filename)
-        target = sheet_name or xobj.sheet_names[0]
-        first = xobj.parse(target, header=None, nrows=1).iloc[0].tolist()
-        out = []
-        for i, cell in enumerate(first):
-            if pd.notna(cell):
-                if isinstance(cell, datetime):
-                    out.append((i, cell.date()))
-                else:
-                    dt = pd.to_datetime(cell, errors="coerce")
-                    if pd.notna(dt):
-                        out.append((i, dt.date()))
-        return out
-    except Exception as e:
-        st.warning(f"Could not extract header dates: {e}")
-        return []
-
 def detect_truck_cols(df: pd.DataFrame) -> List[str]:
     return [c for c in df.columns if str(c).strip().upper().startswith("TRUCK")]
 
@@ -121,7 +47,7 @@ def numericify(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     return df
 
 def find_date_cols(df: pd.DataFrame) -> List[str]:
-    """Enhanced date column detection."""
+    """Find likely date columns by name, dtype, or parsability of a sample."""
     named = [c for c in df.columns if "date" in str(c).lower()]
     dtyped = list(df.select_dtypes(include=["datetime64[ns]", "datetime64[ns, UTC]"]).columns)
 
@@ -149,6 +75,104 @@ def coerce_dates(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
     return df
+
+# --- Progress sanitizer ---
+def clean_progress_col(df: pd.DataFrame, col: str) -> pd.Series:
+    """Return a 0–1 progress series, robust to %, strings, and datetime mis-types."""
+    if col not in df.columns:
+        return pd.Series(dtype="float64", index=df.index)
+
+    s = df[col]
+
+    # If dtype is datetime, treat as NaN (avoid ns-int coercion explosions)
+    if np.issubdtype(s.dtype, np.datetime64):
+        s = pd.Series(np.nan, index=df.index)
+    else:
+        if s.dtype == object:
+            s = s.astype(str).str.replace("%", "", regex=False)
+        s = pd.to_numeric(s, errors="coerce")
+
+    # Valid window
+    s = s.where((s >= 0) & (s <= 1000))
+
+    # Scale to 0–1 if looks like 0–100; drop absurdly large
+    maxv = s.max(skipna=True)
+    if pd.notna(maxv):
+        if maxv > 1.5 and maxv <= 1000:
+            s = s / 100.0
+        elif maxv > 1000:
+            s = np.nan
+
+    return s.clip(0, 1)
+
+# --- Map selected header date strings to actual column names by index ---
+def _header_idx_to_colnames(df: pd.DataFrame, header_dates: List[tuple], selected_dates_str: List[str]) -> List[str]:
+    """
+    header_dates = list of (col_index, date)
+    selected_dates_str = list of 'YYYY-MM-DD'
+    returns list of df column names corresponding to those header date indices
+    """
+    chosen_idxs = [idx for idx, d in header_dates if d.strftime("%Y-%m-%d") in selected_dates_str]
+    return [df.columns[i] for i in chosen_idxs if 0 <= i < len(df.columns)]
+
+# ---------------------------- Cache-safe upload bytes ----------------------------
+@st.cache_data(show_spinner=False)
+def _get_upload_bytes(uploaded_file) -> Tuple[bytes, str]:
+    """Return (file_bytes, filename) — both pickle-serializable."""
+    if hasattr(uploaded_file, "getvalue"):
+        return uploaded_file.getvalue(), getattr(uploaded_file, "name", "") or ""
+    return uploaded_file.read(), getattr(uploaded_file, "name", "") or ""
+
+# ---------------------------- Excel helpers (do NOT cache ExcelFile) ----------------------------
+def _open_excel_from_bytes(file_bytes: bytes, filename: str) -> pd.ExcelFile:
+    """Create a pd.ExcelFile from bytes with the correct engine (.xls -> xlrd, .xlsx -> openpyxl)."""
+    is_xls = filename.lower().endswith(".xls")
+    engine = "xlrd" if is_xls else "openpyxl"
+    return pd.ExcelFile(io.BytesIO(file_bytes), engine=engine)
+
+@st.cache_data(show_spinner=False)
+def load_excel(uploaded_file, sheet_name: Optional[str] = None) -> pd.DataFrame:
+    """Load Excel into a DataFrame with header-row auto-detect (returns DF so caching is safe)."""
+    file_bytes, filename = _get_upload_bytes(uploaded_file)
+    xobj = _open_excel_from_bytes(file_bytes, filename)
+
+    def read_sheet(xobj: pd.ExcelFile, sheet_nm: Optional[str]) -> pd.DataFrame:
+        target = sheet_nm or xobj.sheet_names[0]
+        for hdr in (2, 1, 0):  # Try header at rows 3,2,1
+            try:
+                df_try = xobj.parse(target, header=hdr)
+                df_try.columns = [str(c).strip().upper() for c in df_try.columns]
+                good_cols = sum(not str(c).lower().startswith("unnamed") for c in df_try.columns)
+                if good_cols >= 5:
+                    return df_try
+            except Exception:
+                pass
+        df = xobj.parse(target)
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        return df
+
+    return read_sheet(xobj, sheet_name)
+
+def extract_header_dates(uploaded_file, sheet_name: Optional[str] = None) -> List[tuple]:
+    """Extract date-like cells from first row only; returns list[(col_index, python_date)]."""
+    try:
+        file_bytes, filename = _get_upload_bytes(uploaded_file)
+        xobj = _open_excel_from_bytes(file_bytes, filename)
+        target = sheet_name or xobj.sheet_names[0]
+        first = xobj.parse(target, header=None, nrows=1).iloc[0].tolist()
+        out = []
+        for i, cell in enumerate(first):
+            if pd.notna(cell):
+                if isinstance(cell, datetime):
+                    out.append((i, cell.date()))
+                else:
+                    dt = pd.to_datetime(cell, errors="coerce")
+                    if pd.notna(dt):
+                        out.append((i, dt.date()))
+        return out
+    except Exception as e:
+        st.warning(f"Could not extract header dates: {e}")
+        return []
 
 # ---------------------------- CSS ----------------------------
 st.markdown("""
@@ -247,7 +271,7 @@ if not uploaded:
     """)
     st.stop()
 
-# Peek sheet names (build ExcelFile locally from cached bytes)
+# Peek sheet names
 try:
     _bytes, _name = _get_upload_bytes(uploaded)
     _peek = _open_excel_from_bytes(_bytes, _name)
@@ -266,7 +290,7 @@ with st.spinner("LOADING AND PROCESSING DATA..."):
         st.stop()
     data.columns = [c.strip().upper() for c in data.columns]
 
-# Key columns
+# Column aliases (ALL CAPS expected)
 COL_CUSTOMER = "CUSTOMER NAME"
 COL_PROJECT = "PROJECT NAME"
 COL_PROJECT_NUM = "PROJECT NUMBER"
@@ -293,11 +317,9 @@ numeric_cols_to_cast = [
 ] + truck_cols
 data = numericify(data, numeric_cols_to_cast)
 
-# Normalize progress 0–1 if needed
+# --- Progress cleaning (REPLACES old normalization block) ---
 if COL_PROGRESS in data.columns:
-    max_progress = data[COL_PROGRESS].max()
-    if pd.notna(max_progress) and max_progress > 1:
-        data[COL_PROGRESS] = data[COL_PROGRESS] / 100.0
+    data[COL_PROGRESS] = clean_progress_col(data, COL_PROGRESS)
 
 # ---------------------------- Main Header ----------------------------
 st.markdown('<div class="main-header">🏗️ FULAZ DELIVERY MASTERLOG DASHBOARD</div>', unsafe_allow_html=True)
@@ -313,24 +335,32 @@ st.markdown("#### 📅 DATE RANGE FILTERS")
 date_col1, date_col2, date_col3, date_col4 = st.columns(4)
 
 with date_col1:
+    # --- HEADER DATE FILTER (now actually filters the data & drops other header-date columns) ---
     if header_dates:
         st.markdown("**HEADER DATES AVAILABLE**")
-        header_date_options = ["ALL DATES"] + [f"{d.strftime('%Y-%m-%d')}" for _col, d in header_dates]
-        selected_header_dates = st.multiselect(
-            "SELECT HEADER DATES",
-            header_date_options,
-            default=["ALL DATES"]
-        )
-        if "ALL DATES" not in selected_header_dates:
-            selected_date_values = []
-            for _col, d in header_dates:
-                if d.strftime('%Y-%m-%d') in selected_header_dates:
-                    selected_date_values.append(d)
-            if selected_date_values:
-                st.success(f"FILTERED BY {len(selected_date_values)} HEADER DATES")
-                # (Optional) add per-header-date column logic here if needed.
+        header_date_options = [d.strftime("%Y-%m-%d") for _i, d in header_dates]
+        selected_header_dates = st.multiselect("SELECT HEADER DATES", header_date_options)
+        if selected_header_dates:
+            selected_cols = _header_idx_to_colnames(data, header_dates, selected_header_dates)
+            if selected_cols:
+                # Keep only rows with any non-zero / non-null in chosen header-date columns
+                tmp_num = data[selected_cols].apply(pd.to_numeric, errors="coerce")
+                mask = tmp_num.fillna(0).sum(axis=1) != 0
+                if mask.sum() == 0:
+                    mask = data[selected_cols].notna().any(axis=1)
+                data = data.loc[mask].copy()
+
+                # Drop all other header-date columns so only selected remain
+                all_header_cols = [data.columns[i] for i, _d in header_dates if 0 <= i < len(data.columns)]
+                keep_cols = [c for c in data.columns if c not in all_header_cols or c in selected_cols]
+                data = data.loc[:, keep_cols].copy()
+
+                st.success(f"DATE FILTER APPLIED • {len(selected_cols)} COLUMN(S) • {mask.sum():,} ROWS")
+            else:
+                st.warning("No matching header-date columns found for your selection.")
 
 with date_col2:
+    # --- COLUMN DATE FILTER (standard date column within the data) ---
     if date_cols:
         active_date_col = st.selectbox("📅 DATE COLUMN", options=["NONE"] + date_cols, index=0)
 
@@ -344,7 +374,7 @@ with date_col3, date_col4:
             end_date = st.date_input("END DATE", value=max_d, min_value=min_d, max_value=max_d, key="end_date_input")
             if start_date and end_date:
                 mask = (dseries.dt.date >= start_date) & (dseries.dt.date <= end_date)
-                data = data[mask]
+                data = data[mask].copy()
                 st.success(f"DATE FILTERED: {start_date} TO {end_date}")
 
 # Row 2: Business filters
@@ -644,7 +674,7 @@ with tab3:
         st.subheader("PROJECT DETAILS")
         project_progress['AVG_PROGRESS'] = project_progress['AVG_PROGRESS'] * 100
         styled_project_df = project_progress.style.format({
-            'AVG_PROGRESS': '{:.1f}%',
+            'AVG_PROGRESS': '{:.1}%',
             'TOTAL_WEIGHT': '{:,.2f}',
             'TOTAL_QTY': '{:,.0f}'
         })
@@ -859,7 +889,7 @@ with export_col2:
         )
 
 with export_col3:
-    if truck_cols and st.button("🚛 EXPORT TRUCK DATA", key="truck_btn"):
+    if 'truck_cols' in locals() and truck_cols and st.button("🚛 EXPORT TRUCK DATA", key="truck_btn"):
         tdata = data[truck_cols].fillna(0)
         truck_summary = pd.DataFrame({
             'TRUCK': truck_cols,
